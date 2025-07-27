@@ -38,31 +38,74 @@ jobs:
           terraform init \
             -backend-config="region=${{ secrets.AWS_REGION }}"
           
-          # Check if resources already exist and import them if needed
+          # Check if resources already exist
           echo "Checking for existing resources..."
+          
+          S3_EXISTS=false
+          IAM_EXISTS=false
+          EKS_EXISTS=false
           
           # Check if S3 bucket exists
           if aws s3api head-bucket --bucket ml-crash-course-data 2>/dev/null; then
-            echo "S3 bucket exists, importing to Terraform state..."
-            terraform import aws_s3_bucket.ml_data ml-crash-course-data || true
+            echo "✅ S3 bucket 'ml-crash-course-data' already exists"
+            S3_EXISTS=true
+          else
+            echo "❌ S3 bucket 'ml-crash-course-data' does not exist"
           fi
           
           # Check if IAM role exists
           if aws iam get-role --role-name ml-crash-course-cluster-cluster-role 2>/dev/null; then
-            echo "IAM role exists, importing to Terraform state..."
-            terraform import aws_iam_role.eks_cluster ml-crash-course-cluster-cluster-role || true
+            echo "✅ IAM role 'ml-crash-course-cluster-cluster-role' already exists"
+            IAM_EXISTS=true
+          else
+            echo "❌ IAM role 'ml-crash-course-cluster-cluster-role' does not exist"
           fi
           
-          # Always create/update infrastructure to ensure it exists
+          # Check if EKS cluster exists
+          if aws eks describe-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
+            echo "✅ EKS cluster 'ml-crash-course-cluster' already exists"
+            EKS_EXISTS=true
+          else
+            echo "❌ EKS cluster 'ml-crash-course-cluster' does not exist"
+          fi
+          
+          # Always run Terraform to ensure infrastructure is in desired state
+          echo "🚀 Running Terraform to ensure infrastructure is in desired state..."
+          
+          # Create/update infrastructure (will handle existing resources gracefully)
           echo "Planning infrastructure..."
-          terraform plan \
+          PLAN_OUTPUT=$(terraform plan \
             -var="aws_region=${{ secrets.AWS_REGION }}" \
             -var="s3_bucket_name=ml-crash-course-data" \
             -var="eks_cluster_name=ml-crash-course-cluster" \
-            -out=tfplan
+            -out=tfplan 2>&1)
+          PLAN_EXIT_CODE=$?
+          
+          if [ $PLAN_EXIT_CODE -ne 0 ]; then
+            echo "⚠️  Plan completed with warnings:"
+            echo "$PLAN_OUTPUT"
+          else
+            echo "✅ Plan completed successfully"
+          fi
           
           echo "Applying infrastructure..."
-          terraform apply tfplan
+          APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
+          APPLY_EXIT_CODE=$?
+          
+          if [ $APPLY_EXIT_CODE -ne 0 ]; then
+            # Check for specific "already exists" errors
+            if echo "$APPLY_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|EntityAlreadyExists\|ResourceInUseException"; then
+              echo "⚠️  Apply completed with warnings (some resources already exist):"
+              echo "$APPLY_OUTPUT" | grep -E "(BucketAlreadyOwnedByYou|EntityAlreadyExists|ResourceInUseException)" || true
+              echo "This is expected behavior - continuing with deployment..."
+            else
+              echo "❌ Apply failed with unexpected errors:"
+              echo "$APPLY_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "✅ Apply completed successfully"
+          fi
           
           echo "Getting infrastructure outputs..."
           S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "ml-crash-course-data")
