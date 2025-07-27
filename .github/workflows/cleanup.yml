@@ -125,21 +125,34 @@ jobs:
           echo "🧹 Cleaning up orphaned EBS volumes..."
           
           # Find all EKS clusters to check for volumes
-          CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
+          CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text 2>/dev/null || echo "")
           
-          for CLUSTER in $CLUSTERS; do
-            if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
-              echo "📋 Checking for orphaned EBS volumes for cluster: $CLUSTER"
-              
-              # List EBS volumes that might be orphaned
-              aws ec2 describe-volumes \
-                --filters "Name=tag:kubernetes.io/cluster/$CLUSTER,Values=owned" \
-                --query 'Volumes[?State==`available`].[VolumeId,Tags[?Key==`Name`].Value|[0]]' \
-                --output table || {
-                echo "⚠️  Could not check for orphaned volumes for cluster $CLUSTER"
-              }
-            fi
-          done
+          if [ -n "$CLUSTERS" ] && [ "$CLUSTERS" != "None" ]; then
+            for CLUSTER in $CLUSTERS; do
+              if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
+                echo "📋 Checking for orphaned EBS volumes for cluster: $CLUSTER"
+                
+                # List EBS volumes that might be orphaned
+                aws ec2 describe-volumes \
+                  --filters "Name=tag:kubernetes.io/cluster/$CLUSTER,Values=owned" \
+                  --query 'Volumes[?State==`available`].[VolumeId,Tags[?Key==`Name`].Value|[0]]' \
+                  --output table 2>/dev/null || {
+                  echo "⚠️  Could not check for orphaned volumes for cluster $CLUSTER"
+                }
+              fi
+            done
+          else
+            echo "ℹ️  No EKS clusters found to check for orphaned volumes"
+          fi
+          
+          # Also check for any available volumes that might be orphaned
+          echo "📋 Checking for any available EBS volumes..."
+          aws ec2 describe-volumes \
+            --filters "Name=state,Values=available" \
+            --query 'Volumes[?length(Tags[?Key==`kubernetes.io/cluster/*`]) > `0`].[VolumeId,Tags[?Key==`Name`].Value|[0],Tags[?Key==`kubernetes.io/cluster/*`].Key|[0]]' \
+            --output table 2>/dev/null || {
+            echo "⚠️  Could not check for available volumes"
+          }
           
           echo "ℹ️  Note: Orphaned EBS volumes should be manually deleted from AWS Console if needed"
       
@@ -164,41 +177,55 @@ jobs:
             echo "ℹ️  No Terraform state found, cleaning up resources manually..."
             
             # Clean up EKS clusters
-            CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
+            CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text 2>/dev/null || echo "")
             
-            for CLUSTER in $CLUSTERS; do
-              if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
-                echo "🗑️  Deleting EKS cluster: $CLUSTER"
-                aws eks delete-cluster --name $CLUSTER --region $AWS_REGION || true
-              fi
-            done
+            if [ -n "$CLUSTERS" ] && [ "$CLUSTERS" != "None" ]; then
+              for CLUSTER in $CLUSTERS; do
+                if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
+                  echo "🗑️  Deleting EKS cluster: $CLUSTER"
+                  aws eks delete-cluster --name $CLUSTER --region $AWS_REGION || true
+                fi
+              done
+            else
+              echo "ℹ️  No EKS clusters found to delete"
+            fi
             
             # Clean up S3 buckets
-            BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text)
+            BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text 2>/dev/null || echo "")
             
-            for BUCKET in $BUCKETS; do
-              if [ "$BUCKET" != "None" ] && [ -n "$BUCKET" ]; then
-                echo "🗑️  Deleting S3 bucket: $BUCKET"
-                aws s3 rb s3://$BUCKET --force || true
-              fi
-            done
+            if [ -n "$BUCKETS" ] && [ "$BUCKETS" != "None" ]; then
+              for BUCKET in $BUCKETS; do
+                if [ "$BUCKET" != "None" ] && [ -n "$BUCKET" ]; then
+                  echo "🗑️  Deleting S3 bucket: $BUCKET"
+                  aws s3 rb s3://$BUCKET --force || true
+                fi
+              done
+            else
+              echo "ℹ️  No S3 buckets found to delete"
+            fi
             
             # Clean up IAM roles
-            ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text)
+            ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text 2>/dev/null || echo "")
             
-            for ROLE in $ROLES; do
-              if [ "$ROLE" != "None" ] && [ -n "$ROLE" ]; then
-                echo "🗑️  Deleting IAM role: $ROLE"
-                # Detach policies first
-                POLICIES=$(aws iam list-attached-role-policies --role-name $ROLE --query 'AttachedPolicies[].PolicyArn' --output text)
-                for POLICY in $POLICIES; do
-                  if [ "$POLICY" != "None" ] && [ -n "$POLICY" ]; then
-                    aws iam detach-role-policy --role-name $ROLE --policy-arn $POLICY || true
+            if [ -n "$ROLES" ] && [ "$ROLES" != "None" ]; then
+              for ROLE in $ROLES; do
+                if [ "$ROLE" != "None" ] && [ -n "$ROLE" ]; then
+                  echo "🗑️  Deleting IAM role: $ROLE"
+                  # Detach policies first
+                  POLICIES=$(aws iam list-attached-role-policies --role-name $ROLE --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || echo "")
+                  if [ -n "$POLICIES" ] && [ "$POLICIES" != "None" ]; then
+                    for POLICY in $POLICIES; do
+                      if [ "$POLICY" != "None" ] && [ -n "$POLICY" ]; then
+                        aws iam detach-role-policy --role-name $ROLE --policy-arn $POLICY || true
+                      fi
+                    done
                   fi
-                done
-                aws iam delete-role --role-name $ROLE || true
-              fi
-            done
+                  aws iam delete-role --role-name $ROLE || true
+                fi
+              done
+            else
+              echo "ℹ️  No IAM roles found to delete"
+            fi
             
             echo "✅ Manual infrastructure cleanup completed"
           fi
@@ -209,7 +236,7 @@ jobs:
           
           # Check for remaining EKS clusters
           echo "📊 Checking for remaining EKS clusters..."
-          REMAINING_CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
+          REMAINING_CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text 2>/dev/null || echo "")
           if [ "$REMAINING_CLUSTERS" = "None" ] || [ -z "$REMAINING_CLUSTERS" ]; then
             echo "✅ No EKS clusters found"
           else
@@ -218,7 +245,7 @@ jobs:
           
           # Check for remaining S3 buckets
           echo "📊 Checking for remaining S3 buckets..."
-          REMAINING_BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text)
+          REMAINING_BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text 2>/dev/null || echo "")
           if [ "$REMAINING_BUCKETS" = "None" ] || [ -z "$REMAINING_BUCKETS" ]; then
             echo "✅ No S3 buckets found"
           else
@@ -227,7 +254,7 @@ jobs:
           
           # Check for remaining IAM roles
           echo "📊 Checking for remaining IAM roles..."
-          REMAINING_ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text)
+          REMAINING_ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text 2>/dev/null || echo "")
           if [ "$REMAINING_ROLES" = "None" ] || [ -z "$REMAINING_ROLES" ]; then
             echo "✅ No IAM roles found"
           else
