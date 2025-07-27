@@ -51,6 +51,10 @@ jobs:
             S3_EXISTS=true
           else
             echo "❌ S3 bucket 'ml-crash-course-data' does not exist"
+            echo "Creating S3 bucket manually..."
+            aws s3 mb s3://ml-crash-course-data --region ${{ secrets.AWS_REGION }} || {
+              echo "⚠️  S3 bucket creation failed, will let Terraform handle it"
+            }
           fi
           
           # Check if IAM role exists
@@ -106,22 +110,24 @@ jobs:
                 -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
               APPLY_EXIT_CODE=$?
             else
-              echo "Using plan file for apply..."
-              APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
-              APPLY_EXIT_CODE=$?
+                          echo "Using plan file for apply..."
+            APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
+            APPLY_EXIT_CODE=$?
+            echo "Apply exit code: $APPLY_EXIT_CODE"
             fi
             
             if [ $APPLY_EXIT_CODE -ne 0 ]; then
+              echo "❌ Apply failed with exit code: $APPLY_EXIT_CODE"
+              echo "Full apply output:"
+              echo "$APPLY_OUTPUT"
+              
               # Check for specific "already exists" errors
               if echo "$APPLY_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|EntityAlreadyExists\|ResourceInUseException"; then
-                echo "⚠️  Apply completed with warnings (some resources already exist):"
+                echo "⚠️  Detected 'already exists' errors - treating as warnings and continuing..."
                 echo "$APPLY_OUTPUT" | grep -E "(BucketAlreadyOwnedByYou|EntityAlreadyExists|ResourceInUseException)" || true
                 echo "This is expected behavior - continuing with deployment..."
               else
-                echo "❌ Apply failed with unexpected errors:"
-                echo "$APPLY_OUTPUT"
-                echo "Full apply output for debugging:"
-                echo "$APPLY_OUTPUT"
+                echo "❌ Apply failed with unexpected errors - exiting..."
                 exit 1
               fi
             else
