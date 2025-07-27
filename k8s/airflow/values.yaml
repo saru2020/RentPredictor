@@ -95,7 +95,7 @@ config:
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
   AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
   AIRFLOW__WEBSERVER__SECRET_KEY: "your-secret-key-here"
-  AIRFLOW__CORE__FERNET_KEY: "5T-cpX4XxlEcr8w9Eudb4xW3hBuRVhI14SgJAH7wHjs="
+  AIRFLOW__CORE__FERNET_KEY: "your-fernet-key-here"
 
 # Default user configuration
 webserver:

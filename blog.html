@@ -292,7 +292,6 @@
             <p>After days of research, trial and error, and countless debugging sessions, I finally arrived at this architecture. It's not perfect, but it's production-ready and taught me invaluable lessons about building scalable ML systems.</p>
 
             <div class="mermaid">
-                <div class="mermaid">
 graph TB
     %% ===== DATA LAYER =====
     subgraph "📊 Data Sources & Ingestion"
@@ -377,7 +376,6 @@ graph TB
     class M,N,O,P infraLayer
     class I,J monitoringLayer
     class Q,R,S annotationLayer
-                </div>
             </div>
 
             <h2><span class="emoji">🛠️</span> Technology Stack Deep Dive</h2>
@@ -792,7 +790,156 @@ curl http://a573c745217354ad69c91cc4cda2fd4d-2045820666.us-east-2.elb.amazonaws.
     </div>
 
     <script>
-        mermaid.initialize({ startOnLoad: true });
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true
+            }
+        });
+
+        // Function to export diagram as image
+        function exportDiagram() {
+            const element = document.querySelector('.mermaid');
+            if (element) {
+                const svg = element.querySelector('svg');
+                if (svg) {
+                    // Method 1: Direct SVG download (better quality)
+                    const svgData = new XMLSerializer().serializeToString(svg);
+                    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                    const svgUrl = URL.createObjectURL(svgBlob);
+                    
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = svgUrl;
+                    downloadLink.download = 'rent-predictor-architecture.svg';
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    document.body.removeChild(downloadLink);
+                    URL.revokeObjectURL(svgUrl);
+                    
+                    // Method 2: PNG export (alternative)
+                    setTimeout(() => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const img = new Image();
+                        
+                        img.onload = function() {
+                            // Set high resolution
+                            const scale = 2; // 2x resolution for better quality
+                            canvas.width = img.width * scale;
+                            canvas.height = img.height * scale;
+                            ctx.scale(scale, scale);
+                            ctx.drawImage(img, 0, 0);
+                            
+                            canvas.toBlob(function(blob) {
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = 'rent-predictor-architecture.png';
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                            }, 'image/png', 0.95); // High quality PNG
+                        };
+                        
+                        const svgString = new XMLSerializer().serializeToString(svg);
+                        const svg64 = btoa(unescape(encodeURIComponent(svgString)));
+                        img.src = 'data:image/svg+xml;base64,' + svg64;
+                    }, 100);
+                }
+            }
+        }
+
+        // Add export button after diagram loads
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                const mermaidContainer = document.querySelector('.mermaid');
+                if (mermaidContainer) {
+                    // Create export container
+                    const exportContainer = document.createElement('div');
+                    exportContainer.style.cssText = `
+                        position: absolute;
+                        top: 10px;
+                        right: 10px;
+                        display: flex;
+                        gap: 8px;
+                    `;
+                    
+                    // SVG Export Button
+                    const svgButton = document.createElement('button');
+                    svgButton.innerHTML = '📥 SVG';
+                    svgButton.style.cssText = `
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        border: none;
+                        padding: 8px 12px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 12px;
+                        font-weight: 500;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        transition: all 0.3s ease;
+                    `;
+                    svgButton.onmouseover = function() {
+                        this.style.transform = 'translateY(-1px)';
+                        this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
+                    };
+                    svgButton.onmouseout = function() {
+                        this.style.transform = 'translateY(0)';
+                        this.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                    };
+                    svgButton.onclick = function() {
+                        const svg = element.querySelector('svg');
+                        if (svg) {
+                            const svgData = new XMLSerializer().serializeToString(svg);
+                            const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                            const svgUrl = URL.createObjectURL(svgBlob);
+                            
+                            const downloadLink = document.createElement('a');
+                            downloadLink.href = svgUrl;
+                            downloadLink.download = 'rent-predictor-architecture.svg';
+                            document.body.appendChild(downloadLink);
+                            downloadLink.click();
+                            document.body.removeChild(downloadLink);
+                            URL.revokeObjectURL(svgUrl);
+                        }
+                    };
+                    
+                    // PNG Export Button
+                    const pngButton = document.createElement('button');
+                    pngButton.innerHTML = '📥 PNG';
+                    pngButton.style.cssText = `
+                        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                        color: white;
+                        border: none;
+                        padding: 8px 12px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 12px;
+                        font-weight: 500;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        transition: all 0.3s ease;
+                    `;
+                    pngButton.onmouseover = function() {
+                        this.style.transform = 'translateY(-1px)';
+                        this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
+                    };
+                    pngButton.onmouseout = function() {
+                        this.style.transform = 'translateY(0)';
+                        this.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                    };
+                    pngButton.onclick = exportDiagram;
+                    
+                    exportContainer.appendChild(svgButton);
+                    exportContainer.appendChild(pngButton);
+                    
+                    mermaidContainer.style.position = 'relative';
+                    mermaidContainer.appendChild(exportContainer);
+                }
+            }, 2000); // Wait for mermaid to render
+        });
     </script>
 </body>
 </html> 
