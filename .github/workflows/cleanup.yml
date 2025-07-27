@@ -156,6 +156,39 @@ jobs:
           
           echo "ℹ️  Note: Orphaned EBS volumes should be manually deleted from AWS Console if needed"
       
+      - name: Cleanup Kubernetes Resources First
+        if: github.event.inputs.cleanup_type == 'all'
+        run: |
+          echo "🔧 Ensuring Kubernetes resources are cleaned up before infrastructure..."
+          if [ -n "$EKS_CLUSTER_NAME" ]; then
+            echo "🔧 Setting up kubectl for cluster: $EKS_CLUSTER_NAME"
+            aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+            
+            # Clean up any remaining Kubernetes resources
+            echo "🧹 Cleaning up any remaining Kubernetes resources..."
+            
+            # Delete all namespaces except kube-system and default
+            NAMESPACES=$(kubectl get namespaces --no-headers -o custom-columns=":metadata.name" | grep -v "kube-system\|default" 2>/dev/null || echo "")
+            if [ -n "$NAMESPACES" ]; then
+              for NS in $NAMESPACES; do
+                echo "🗑️  Deleting namespace: $NS"
+                kubectl delete namespace $NS --force --grace-period=0 2>/dev/null || true
+              done
+            fi
+            
+            # Delete any remaining PVCs
+            echo "🗑️  Cleaning up any remaining PVCs..."
+            kubectl delete pvc --all --all-namespaces --force --grace-period=0 2>/dev/null || true
+            
+            # Delete any remaining services
+            echo "🗑️  Cleaning up any remaining services..."
+            kubectl delete service --all --all-namespaces --force --grace-period=0 2>/dev/null || true
+            
+            echo "✅ Kubernetes resources cleanup completed"
+          else
+            echo "⚠️  No EKS cluster found, skipping Kubernetes cleanup"
+          fi
+      
       - name: Cleanup Infrastructure
         if: github.event.inputs.cleanup_type == 'infrastructure' || github.event.inputs.cleanup_type == 'all'
         run: |
@@ -171,8 +204,122 @@ jobs:
           # Check if state exists and has resources
           if terraform state list > /dev/null 2>&1; then
             echo "🗑️  Destroying infrastructure with Terraform..."
-            terraform destroy -auto-approve -var="aws_region=$AWS_REGION"
-            echo "✅ Infrastructure destroyed successfully"
+            
+            # First, try to destroy with -refresh=false to avoid dependency issues
+            echo "🔄 Attempting Terraform destroy with refresh disabled..."
+            terraform destroy -auto-approve -refresh=false -var="aws_region=$AWS_REGION" || {
+              echo "⚠️  Terraform destroy failed, trying to clean up dependencies first..."
+              
+              # Get VPC ID from Terraform state
+              VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+              if [ -n "$VPC_ID" ]; then
+                echo "🔍 Found VPC: $VPC_ID, cleaning up dependencies..."
+                
+                # Clean up NAT gateways
+                echo "🗑️  Cleaning up NAT gateways..."
+                NAT_GATEWAYS=$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text 2>/dev/null || echo "")
+                if [ -n "$NAT_GATEWAYS" ] && [ "$NAT_GATEWAYS" != "None" ]; then
+                  for NAT_GW in $NAT_GATEWAYS; do
+                    if [ "$NAT_GW" != "None" ] && [ -n "$NAT_GW" ]; then
+                      echo "🗑️  Deleting NAT gateway: $NAT_GW"
+                      aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GW || true
+                    fi
+                  done
+                  
+                  # Wait for NAT gateways to be deleted
+                  echo "⏳ Waiting for NAT gateways to be deleted..."
+                  sleep 60
+                fi
+                
+                # Clean up Elastic IPs
+                echo "🗑️  Cleaning up Elastic IPs..."
+                EIPS=$(aws ec2 describe-addresses --filter "Name=domain,Values=vpc" --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || echo "")
+                if [ -n "$EIPS" ] && [ "$EIPS" != "None" ]; then
+                  for EIP in $EIPS; do
+                    if [ "$EIP" != "None" ] && [ -n "$EIP" ]; then
+                      echo "🗑️  Releasing Elastic IP: $EIP"
+                      aws ec2 release-address --allocation-id $EIP || true
+                    fi
+                  done
+                fi
+                
+                # Clean up route table associations
+                echo "🗑️  Cleaning up route table associations..."
+                ROUTE_TABLES=$(aws ec2 describe-route-tables --filter "Name=vpc-id,Values=$VPC_ID" --query 'RouteTables[].RouteTableId' --output text 2>/dev/null || echo "")
+                if [ -n "$ROUTE_TABLES" ] && [ "$ROUTE_TABLES" != "None" ]; then
+                  for RT in $ROUTE_TABLES; do
+                    if [ "$RT" != "None" ] && [ -n "$RT" ]; then
+                      # Get subnet associations
+                      SUBNET_ASSOCIATIONS=$(aws ec2 describe-route-tables --route-table-ids $RT --query 'RouteTables[0].Associations[?SubnetId!=null].RouteTableAssociationId' --output text 2>/dev/null || echo "")
+                      if [ -n "$SUBNET_ASSOCIATIONS" ] && [ "$SUBNET_ASSOCIATIONS" != "None" ]; then
+                        for ASSOC in $SUBNET_ASSOCIATIONS; do
+                          if [ "$ASSOC" != "None" ] && [ -n "$ASSOC" ]; then
+                            echo "🗑️  Disassociating route table: $ASSOC"
+                            aws ec2 disassociate-route-table --association-id $ASSOC || true
+                          fi
+                        done
+                      fi
+                    fi
+                  done
+                fi
+              fi
+              
+              # Try Terraform destroy again
+              echo "🔄 Retrying Terraform destroy..."
+              terraform destroy -auto-approve -var="aws_region=$AWS_REGION" || {
+                echo "❌ Terraform destroy still failed, falling back to manual cleanup..."
+                
+                # Manual cleanup of remaining resources
+                echo "🗑️  Performing manual cleanup of remaining resources..."
+                
+                # Clean up EKS clusters
+                CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text 2>/dev/null || echo "")
+                
+                if [ -n "$CLUSTERS" ] && [ "$CLUSTERS" != "None" ]; then
+                  for CLUSTER in $CLUSTERS; do
+                    if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
+                      echo "🗑️  Deleting EKS cluster: $CLUSTER"
+                      aws eks delete-cluster --name $CLUSTER --region $AWS_REGION || true
+                    fi
+                  done
+                fi
+                
+                # Clean up S3 buckets
+                BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text 2>/dev/null || echo "")
+                
+                if [ -n "$BUCKETS" ] && [ "$BUCKETS" != "None" ]; then
+                  for BUCKET in $BUCKETS; do
+                    if [ "$BUCKET" != "None" ] && [ -n "$BUCKET" ]; then
+                      echo "🗑️  Deleting S3 bucket: $BUCKET"
+                      aws s3 rb s3://$BUCKET --force || true
+                    fi
+                  done
+                fi
+                
+                # Clean up IAM roles
+                ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text 2>/dev/null || echo "")
+                
+                if [ -n "$ROLES" ] && [ "$ROLES" != "None" ]; then
+                  for ROLE in $ROLES; do
+                    if [ "$ROLE" != "None" ] && [ -n "$ROLE" ]; then
+                      echo "🗑️  Deleting IAM role: $ROLE"
+                      # Detach policies first
+                      POLICIES=$(aws iam list-attached-role-policies --role-name $ROLE --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || echo "")
+                      if [ -n "$POLICIES" ] && [ "$POLICIES" != "None" ]; then
+                        for POLICY in $POLICIES; do
+                          if [ "$POLICY" != "None" ] && [ -n "$POLICY" ]; then
+                            aws iam detach-role-policy --role-name $ROLE --policy-arn $POLICY || true
+                          fi
+                        done
+                      fi
+                      aws iam delete-role --role-name $ROLE || true
+                    fi
+                  done
+                fi
+              }
+            }
+            
+            echo "✅ Infrastructure cleanup completed"
           else
             echo "ℹ️  No Terraform state found, cleaning up resources manually..."
             
@@ -199,7 +346,7 @@ jobs:
                   echo "🗑️  Deleting S3 bucket: $BUCKET"
                   aws s3 rb s3://$BUCKET --force || true
                 fi
-              done
+                done
             else
               echo "ℹ️  No S3 buckets found to delete"
             fi
