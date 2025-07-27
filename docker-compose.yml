@@ -1,0 +1,93 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  spark:
+    build: ./spark_jobs
+    environment:
+      - SPARK_MODE=master
+      - HOME=/tmp
+      - USER=spark
+      - LOGNAME=spark
+      - HADOOP_USER_NAME=spark
+      - S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - S3_BUCKET=ml-crash-course-data
+      - S3_KEY=House_Rent_Dataset.csv
+      - MODEL_PATH=s3a://ml-crash-course-data/model
+    ports:
+      - "8080:8080"
+    depends_on:
+      - minio
+    volumes:
+      - ./spark_jobs:/opt/bitnami/spark_jobs
+
+  airflow-webserver:
+    image: apache/airflow:2.7.3
+    restart: always
+    depends_on:
+      - airflow-scheduler
+      - minio
+    command: >
+      bash -c "
+        pip install docker-compose &&
+        airflow webserver
+      "
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__CORE__FERNET_KEY=5T-cpX4XxlEcr8w9Eudb4xW3hBuRVhI14SgJAH7wHjs=
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=your-secret-key-here
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_data:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8081:8080"
+
+  airflow-scheduler:
+    image: apache/airflow:2.7.3
+    restart: always
+    depends_on:
+      - minio
+    command: >
+      bash -c "
+        pip install docker-compose &&
+        airflow scheduler
+      "
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__CORE__FERNET_KEY=5T-cpX4XxlEcr8w9Eudb4xW3hBuRVhI14SgJAH7wHjs=
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_data:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  model_api:
+    build: ./model_api
+    ports:
+      - "5001:5000"
+    environment:
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET=ml-crash-course-data
+      - S3_KEY=House_Rent_Dataset.csv
+    depends_on:
+      - minio
+
+volumes:
+  minio_data:
+  airflow_data: 

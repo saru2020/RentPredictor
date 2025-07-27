@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: model-api
+  template:
+    metadata:
+      labels:
+        app: model-api
+    spec:
+      containers:
+      - name: model-api
+        image: <ECR_IMAGE_URI>
+        ports:
+        - containerPort: 5000
+        env:
+        - name: S3_BUCKET
+          value: "ml-crash-course-data"
+        - name: S3_KEY
+          value: "House_Rent_Dataset.csv"
+        - name: S3_ENDPOINT_URL
+          value: "https://s3.amazonaws.com" 

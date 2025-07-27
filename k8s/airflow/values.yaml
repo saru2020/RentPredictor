@@ -1,0 +1,10 @@
+executor: KubernetesExecutor
+web:
+  service:
+    type: LoadBalancer
+  port: 8080
+workers:
+  replicas: 2
+logs:
+  persistence:
+    enabled: false 
