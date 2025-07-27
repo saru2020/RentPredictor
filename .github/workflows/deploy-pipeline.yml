@@ -89,8 +89,20 @@ jobs:
           fi
           
           echo "Applying infrastructure..."
-          APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
-          APPLY_EXIT_CODE=$?
+          
+          # Check if plan file exists
+          if [ ! -f "tfplan" ]; then
+            echo "⚠️  Plan file not found, applying directly..."
+            APPLY_OUTPUT=$(terraform apply -auto-approve \
+              -var="aws_region=${{ secrets.AWS_REGION }}" \
+              -var="s3_bucket_name=ml-crash-course-data" \
+              -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
+            APPLY_EXIT_CODE=$?
+          else
+            echo "Using plan file for apply..."
+            APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
+            APPLY_EXIT_CODE=$?
+          fi
           
           if [ $APPLY_EXIT_CODE -ne 0 ]; then
             # Check for specific "already exists" errors
@@ -100,6 +112,8 @@ jobs:
               echo "This is expected behavior - continuing with deployment..."
             else
               echo "❌ Apply failed with unexpected errors:"
+              echo "$APPLY_OUTPUT"
+              echo "Full apply output for debugging:"
               echo "$APPLY_OUTPUT"
               exit 1
             fi
