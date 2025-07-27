@@ -157,7 +157,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
-      S3_BUCKET: ${{ needs.provision-infra.outputs.s3_bucket_name }}
+      S3_BUCKET: ${{ needs.check-infra.outputs.s3_bucket_name }}
       S3_KEY: House_Rent_Dataset.csv
       LOCAL_PATH: data/House_Rent_Dataset.csv
     steps:
@@ -229,7 +229,7 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
       ECR_REPO_API: ml-crash-course-api
-      EKS_CLUSTER_NAME: ${{ needs.provision-infra.outputs.eks_cluster_name }}
+      EKS_CLUSTER_NAME: ${{ needs.check-infra.outputs.eks_cluster_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
