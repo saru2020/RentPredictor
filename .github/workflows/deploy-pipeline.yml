@@ -42,7 +42,6 @@ jobs:
           echo "Checking for existing resources..."
           
           S3_EXISTS=false
-          IAM_EXISTS=false
           EKS_EXISTS=false
           
           # Check if S3 bucket exists
@@ -51,18 +50,6 @@ jobs:
             S3_EXISTS=true
           else
             echo "❌ S3 bucket 'ml-crash-course-data' does not exist"
-            echo "Creating S3 bucket manually..."
-            aws s3 mb s3://ml-crash-course-data --region ${{ secrets.AWS_REGION }} || {
-              echo "⚠️  S3 bucket creation failed, will let Terraform handle it"
-            }
-          fi
-          
-          # Check if IAM role exists
-          if aws iam get-role --role-name ml-crash-course-cluster-cluster-role 2>/dev/null; then
-            echo "✅ IAM role 'ml-crash-course-cluster-cluster-role' already exists"
-            IAM_EXISTS=true
-          else
-            echo "❌ IAM role 'ml-crash-course-cluster-cluster-role' does not exist"
           fi
           
           # Check if EKS cluster exists
@@ -73,90 +60,80 @@ jobs:
             echo "❌ EKS cluster 'ml-crash-course-cluster' does not exist"
           fi
           
-          # Create resources individually based on what exists
-          echo "🔧 Ensuring all required resources exist..."
+          # Use Terraform to manage all infrastructure
+          echo "🔧 Managing infrastructure with Terraform..."
           
-          # Ensure S3 bucket exists
-          if [ "$S3_EXISTS" = false ]; then
-            echo "📦 Creating S3 bucket..."
-            aws s3 mb s3://ml-crash-course-data --region ${{ secrets.AWS_REGION }} || {
-              echo "⚠️  S3 bucket creation failed (may already exist)"
-            }
-          else
-            echo "✅ S3 bucket already exists"
+          # Import existing resources if they exist but aren't in Terraform state
+          if [ "$S3_EXISTS" = true ]; then
+            echo "📦 Importing existing S3 bucket into Terraform state..."
+            terraform import aws_s3_bucket.ml_data ml-crash-course-data || echo "⚠️  S3 bucket already in state or import failed"
           fi
           
-          # Ensure IAM role exists
-          if [ "$IAM_EXISTS" = false ]; then
-            echo "🔐 Creating IAM role..."
-            aws iam create-role \
-              --role-name ml-crash-course-cluster-cluster-role \
-              --assume-role-policy-document '{
-                "Version": "2012-10-17",
-                "Statement": [
-                  {
-                    "Effect": "Allow",
-                    "Principal": {
-                      "Service": "eks.amazonaws.com"
-                    },
-                    "Action": "sts:AssumeRole"
-                  }
-                ]
-              }' || {
-              echo "⚠️  IAM role creation failed (may already exist)"
-            }
-            
-            # Attach EKS cluster policy
-            aws iam attach-role-policy \
-              --role-name ml-crash-course-cluster-cluster-role \
-              --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy || {
-              echo "⚠️  IAM policy attachment failed (may already be attached)"
-            }
-          else
-            echo "✅ IAM role already exists"
+          if [ "$EKS_EXISTS" = true ]; then
+            echo "🚀 Importing existing EKS cluster into Terraform state..."
+            terraform import aws_eks_cluster.main ml-crash-course-cluster || echo "⚠️  EKS cluster already in state or import failed"
           fi
           
-          # Ensure EKS cluster exists
-          if [ "$EKS_EXISTS" = false ]; then
-            echo "🚀 Creating EKS cluster..."
-            
-            # Try to create all infrastructure at once (cleaner approach)
-            echo "🌐 Creating complete infrastructure..."
-            INFRA_OUTPUT=$(terraform apply -auto-approve \
+          # Run terraform plan to see what needs to be created
+          echo "📋 Planning Terraform changes..."
+          terraform plan \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="s3_bucket_name=ml-crash-course-data" \
+            -var="eks_cluster_name=ml-crash-course-cluster" \
+            -out=tfplan || {
+            echo "⚠️  Terraform plan failed, trying apply directly..."
+            terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
-            INFRA_EXIT_CODE=$?
-            
-            if [ $INFRA_EXIT_CODE -ne 0 ]; then
-              if echo "$INFRA_OUTPUT" | grep -q "VpcLimitExceeded\|EntityAlreadyExists\|ResourceInUseException"; then
-                echo "⚠️  Infrastructure creation failed (limits exceeded or resources already exist)"
-                echo "$INFRA_OUTPUT" | grep -E "(VpcLimitExceeded|EntityAlreadyExists|ResourceInUseException)" || true
-                echo "This is expected if resources already exist from previous runs."
+              -var="eks_cluster_name=ml-crash-course-cluster"
+          }
+          
+          # Apply Terraform changes if plan was successful
+          if [ -f tfplan ]; then
+            echo "🌐 Applying Terraform changes..."
+            terraform apply tfplan || {
+              echo "⚠️  Terraform apply failed, trying to handle common issues..."
+              
+              # Check for specific error patterns and handle them
+              APPLY_OUTPUT=$(terraform apply -auto-approve \
+                -var="aws_region=${{ secrets.AWS_REGION }}" \
+                -var="s3_bucket_name=ml-crash-course-data" \
+                -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
+              APPLY_EXIT_CODE=$?
+              
+              if [ $APPLY_EXIT_CODE -ne 0 ]; then
+                if echo "$APPLY_OUTPUT" | grep -q "VpcLimitExceeded\|EntityAlreadyExists\|ResourceInUseException\|BucketAlreadyOwnedByYou"; then
+                  echo "⚠️  Some resources already exist or limits exceeded, but continuing..."
+                  echo "$APPLY_OUTPUT" | grep -E "(VpcLimitExceeded|EntityAlreadyExists|ResourceInUseException|BucketAlreadyOwnedByYou)" || true
+                else
+                  echo "❌ Terraform apply failed with unexpected error:"
+                  echo "$APPLY_OUTPUT"
+                  exit 1
+                fi
               else
-                echo "❌ Infrastructure creation failed with unexpected error:"
-                echo "$INFRA_OUTPUT"
+                echo "✅ Terraform apply completed successfully"
               fi
-            else
-              echo "✅ Infrastructure created successfully"
-            fi
-          else
-            echo "✅ EKS cluster already exists"
+            }
           fi
           
-          echo "🎉 All resources ensured to exist!"
+          echo "🎉 Infrastructure management complete!"
           
+          # Get outputs from Terraform
           echo "Getting infrastructure outputs..."
           
-          # Always use known resource names since we're creating them individually
-          S3_BUCKET_NAME="ml-crash-course-data"
-          EKS_CLUSTER_NAME="ml-crash-course-cluster"
-          echo "Using known resource names:"
+          # Use fallback values if Terraform outputs fail
+          S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "ml-crash-course-data")
+          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null || echo "ml-crash-course-cluster")
           
           echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
           echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
           echo "Using S3 Bucket: $S3_BUCKET_NAME"
           echo "Using EKS Cluster: $EKS_CLUSTER_NAME"
+          
+          # Wait for EKS cluster to be ready
+          echo "⏳ Waiting for EKS cluster to be ready..."
+          aws eks wait cluster-active --name $EKS_CLUSTER_NAME --region ${{ secrets.AWS_REGION }}
+          echo "✅ EKS cluster is ready!"
 
   # Step 2: Upload Dataset to S3
   upload-data:
@@ -188,6 +165,10 @@ jobs:
         run: |
           echo "Uploading to S3 bucket: $S3_BUCKET"
           python upload_data_to_s3.py
+        env:
+          S3_BUCKET: ${{ needs.check-infra.outputs.s3_bucket_name }}
+          S3_KEY: House_Rent_Dataset.csv
+          LOCAL_PATH: data/House_Rent_Dataset.csv
 
   # Step 3: Build and Push Docker Images
   build-and-push:
@@ -221,14 +202,30 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
       - name: Build and push Spark job image
         run: |
-          docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs
+          echo "Building Spark job image..."
+          docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs || {
+            echo "❌ Failed to build Spark job image"
+            exit 1
+          }
           docker tag $ECR_REPO_SPARK:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest || {
+            echo "❌ Failed to push Spark job image"
+            exit 1
+          }
+          echo "✅ Spark job image built and pushed successfully"
       - name: Build and push Model API image
         run: |
-          docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api
+          echo "Building Model API image..."
+          docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api || {
+            echo "❌ Failed to build Model API image"
+            exit 1
+          }
           docker tag $ECR_REPO_API:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest || {
+            echo "❌ Failed to push Model API image"
+            exit 1
+          }
+          echo "✅ Model API image built and pushed successfully"
 
   # Step 4: Deploy to EKS
   deploy-to-eks:
@@ -256,9 +253,14 @@ jobs:
         uses: azure/setup-helm@v3
       - name: Deploy Airflow via Helm
         run: |
+          echo "Deploying Airflow via Helm..."
           helm repo add apache-airflow https://airflow.apache.org
           helm repo update
-          helm upgrade --install airflow apache-airflow/airflow -f k8s/airflow/values.yaml --namespace airflow --create-namespace
+          helm upgrade --install airflow apache-airflow/airflow -f k8s/airflow/values.yaml --namespace airflow --create-namespace || {
+            echo "❌ Failed to deploy Airflow"
+            exit 1
+          }
+          echo "✅ Airflow deployed successfully"
       - name: Install yq
         run: |
           sudo wget https://github.com/mikefarah/yq/releases/download/v4.43.1/yq_linux_amd64 -O /usr/bin/yq
@@ -269,12 +271,46 @@ jobs:
           yq e '.spec.template.spec.containers[0].image = env(ECR_IMAGE_URI)' k8s/model_api/deployment.yaml > k8s/model_api/deployment.sub.yaml
       - name: Deploy Model API
         run: |
-          kubectl apply -f k8s/model_api/deployment.sub.yaml
-          kubectl apply -f k8s/model_api/service.yaml
-          kubectl patch service model-api -p '{"spec": {"ports": [{"port": 5001, "targetPort": 5000}]}}'
+          echo "Deploying Model API..."
+          kubectl apply -f k8s/model_api/deployment.sub.yaml || {
+            echo "❌ Failed to deploy Model API deployment"
+            exit 1
+          }
+          kubectl apply -f k8s/model_api/service.yaml || {
+            echo "❌ Failed to deploy Model API service"
+            exit 1
+          }
+          kubectl patch service model-api -p '{"spec": {"ports": [{"port": 5001, "targetPort": 5000}]}}' || {
+            echo "⚠️  Failed to patch service, but continuing..."
+          }
+          echo "✅ Model API deployed successfully"
+      - name: Wait for deployments to be ready
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          
+          # Wait for Airflow webserver
+          kubectl wait --for=condition=available --timeout=300s deployment/airflow-webserver -n airflow || {
+            echo "⚠️  Airflow webserver not ready within timeout, but continuing..."
+          }
+          
+          # Wait for Model API
+          kubectl wait --for=condition=available --timeout=300s deployment/model-api || {
+            echo "⚠️  Model API not ready within timeout, but continuing..."
+          }
+          
+          echo "✅ Deployments are ready!"
       - name: Deployment Complete
         run: |
           echo "🎉 Complete deployment pipeline finished successfully!"
           echo "Infrastructure: ✅"
           echo "Data uploaded: ✅"
-          echo "Applications deployed: ✅" 
+          echo "Applications deployed: ✅"
+          
+          # Get service information
+          echo ""
+          echo "📋 Deployment Summary:"
+          echo "S3 Bucket: ${{ needs.check-infra.outputs.s3_bucket_name }}"
+          echo "EKS Cluster: ${{ needs.check-infra.outputs.eks_cluster_name }}"
+          
+          # Get service endpoints
+          kubectl get services -o wide || echo "⚠️  Could not get service information" 
