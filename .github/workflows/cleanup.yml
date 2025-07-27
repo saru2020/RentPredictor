@@ -197,14 +197,24 @@ jobs:
           echo "🏗️  Cleaning up infrastructure resources..."
           cd infra
           
-          # Initialize Terraform if needed
-          if [ ! -d ".terraform" ]; then
-            echo "🔧 Initializing Terraform..."
-            terraform init
+          # Check if S3 backend bucket exists before initializing Terraform
+          BACKEND_BUCKET="ml-crash-course-terraform-state"
+          echo "🔍 Checking if S3 backend bucket exists: $BACKEND_BUCKET"
+          
+          if aws s3api head-bucket --bucket $BACKEND_BUCKET 2>/dev/null; then
+            echo "✅ S3 backend bucket exists, initializing Terraform..."
+            # Initialize Terraform if needed
+            if [ ! -d ".terraform" ]; then
+              echo "🔧 Initializing Terraform..."
+              terraform init
+            fi
+          else
+            echo "⚠️  S3 backend bucket does not exist, skipping Terraform initialization"
+            echo "🗑️  Proceeding with manual cleanup of AWS resources..."
           fi
           
           # Check if state exists and has resources
-          if terraform state list > /dev/null 2>&1; then
+          if aws s3api head-bucket --bucket $BACKEND_BUCKET 2>/dev/null && terraform state list > /dev/null 2>&1; then
             echo "🗑️  Destroying infrastructure with Terraform..."
             
             # Pre-cleanup: Remove resources that commonly cause dependency issues
@@ -457,7 +467,7 @@ jobs:
             
             echo "✅ Infrastructure cleanup completed"
           else
-            echo "ℹ️  No Terraform state found, cleaning up resources manually..."
+            echo "ℹ️  No Terraform state found or S3 backend bucket doesn't exist, cleaning up resources manually..."
             
             # Clean up EKS clusters
             CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text 2>/dev/null || echo "")
@@ -511,6 +521,19 @@ jobs:
             fi
             
             echo "✅ Manual infrastructure cleanup completed"
+          fi
+          
+          # Clean up the S3 backend bucket if it exists
+          echo "🗑️  Cleaning up S3 backend bucket..."
+          if aws s3api head-bucket --bucket $BACKEND_BUCKET 2>/dev/null; then
+            echo "🗑️  Deleting S3 backend bucket: $BACKEND_BUCKET"
+            # Remove any objects in the bucket first
+            aws s3 rm s3://$BACKEND_BUCKET --recursive || true
+            # Delete the bucket
+            aws s3api delete-bucket --bucket $BACKEND_BUCKET || true
+            echo "✅ S3 backend bucket cleanup completed"
+          else
+            echo "ℹ️  S3 backend bucket does not exist, nothing to clean up"
           fi
           
           # Additional cleanup for any remaining resources that might be stuck
@@ -570,6 +593,14 @@ jobs:
             echo "✅ No IAM roles found"
           else
             echo "⚠️  Remaining roles: $REMAINING_ROLES"
+          fi
+          
+          # Check for S3 backend bucket
+          echo "📊 Checking for S3 backend bucket..."
+          if aws s3api head-bucket --bucket "ml-crash-course-terraform-state" 2>/dev/null; then
+            echo "⚠️  S3 backend bucket still exists"
+          else
+            echo "✅ S3 backend bucket not found"
           fi
           
           echo "✅ Cleanup verification completed"
