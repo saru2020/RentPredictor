@@ -456,6 +456,62 @@ jobs:
               echo "Please create node groups manually in the AWS console"
             }
           fi
+          
+          # Check if node group exists and is active
+          echo "🔍 Verifying node group status..."
+          NODEGROUP_STATUS=$(aws eks describe-nodegroup \
+            --cluster-name $EKS_CLUSTER_NAME \
+            --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+            --region $AWS_REGION \
+            --query 'nodegroup.status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          if [ "$NODEGROUP_STATUS" = "NOT_FOUND" ] || [ "$NODEGROUP_STATUS" != "ACTIVE" ]; then
+            echo "⚠️  Node group not found or not active (status: $NODEGROUP_STATUS)"
+            echo "🔧 Forcing Terraform apply to create/update node group..."
+            
+            cd infra
+            terraform apply -auto-approve \
+              -var="aws_region=${{ secrets.AWS_REGION }}" \
+              -var="s3_bucket_name=ml-crash-course-data" \
+              -var="eks_cluster_name=ml-crash-course-cluster"
+            
+            echo "⏳ Waiting for node group to be active..."
+            aws eks wait nodegroup-active \
+              --cluster-name $EKS_CLUSTER_NAME \
+              --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+              --region $AWS_REGION || {
+              echo "⚠️  Node group not ready yet, but continuing..."
+            }
+            
+            cd ..
+          else
+            echo "✅ Node group is active (status: $NODEGROUP_STATUS)"
+          fi
+          
+          # Wait for nodes to be ready
+          echo "⏳ Waiting for nodes to be ready..."
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            READY_NODES=$(kubectl get nodes --no-headers | grep -c "Ready")
+            TOTAL_NODES=$(kubectl get nodes --no-headers | wc -l)
+            
+            echo "📊 Node status: $READY_NODES/$TOTAL_NODES nodes ready (attempt $((ATTEMPT+1))/$MAX_ATTEMPTS)"
+            
+            if [ $READY_NODES -gt 0 ]; then
+              echo "✅ Nodes are ready!"
+              break
+            fi
+            
+            ATTEMPT=$((ATTEMPT+1))
+            sleep 30
+          done
+          
+          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+            echo "⚠️  Timeout waiting for nodes to be ready, but continuing..."
+          fi
       - name: Set up Helm
         uses: azure/setup-helm@v3
       - name: Deploy Airflow via Helm
@@ -644,10 +700,30 @@ jobs:
           echo "📊 Available nodes:"
           kubectl get nodes
           
+          # Check EKS node group status
+          echo "🔍 Checking EKS node group status..."
+          aws eks describe-nodegroup \
+            --cluster-name $EKS_CLUSTER_NAME \
+            --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+            --region $AWS_REGION || {
+            echo "❌ Node group not found or not accessible"
+            echo "🔍 Listing all node groups:"
+            aws eks list-nodegroups --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION || echo "No node groups found"
+          }
+          
+          # Check if nodes are joining the cluster
+          echo "🔍 Checking if nodes are joining the cluster..."
+          kubectl get nodes -o wide
+          
           if [ "$READY_PODS" -gt 0 ]; then
             echo "✅ Model API deployment is progressing"
           else
             echo "⚠️  Model API pods not ready yet - checking for scheduling issues"
+            echo "🔍 This might be due to:"
+            echo "  1. Node group not created yet"
+            echo "  2. Nodes not ready to accept pods"
+            echo "  3. Insufficient resources"
+            echo "  4. Network connectivity issues"
           fi
       - name: Wait for deployments to be ready
         run: |
