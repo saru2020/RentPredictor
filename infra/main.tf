@@ -32,3 +32,8 @@ output "eks_cluster_endpoint" {
   description = "Endpoint for EKS control plane"
   value       = module.eks.cluster_endpoint
 }
+
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket for ML data"
+  value       = aws_s3_bucket.ml_data.bucket
+}

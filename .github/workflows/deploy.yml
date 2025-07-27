@@ -24,12 +24,29 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
-      - name: Get EKS cluster name from Terraform
+      - name: Check infrastructure state
         run: |
           cd infra
           terraform init
-          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
-          echo "EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME" >> $GITHUB_ENV
+          echo "Checking if infrastructure has been provisioned..."
+          if [ ! -f ".terraform/terraform.tfstate" ] && [ ! -f ".terraform/terraform.tfstate.backup" ]; then
+            echo "Error: No Terraform state found. Infrastructure has not been provisioned."
+            echo "Please run the 'Provision AWS Infra' workflow first to create the EKS cluster."
+            exit 1
+          fi
+      - name: Get EKS cluster name from Terraform
+        run: |
+          cd infra
+          # Check if terraform state exists and has outputs
+          if terraform output eks_cluster_name > /dev/null 2>&1; then
+            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+            echo "EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME" >> $GITHUB_ENV
+            echo "Found EKS cluster: $EKS_CLUSTER_NAME"
+          else
+            echo "Error: EKS cluster not found in Terraform state. Please ensure infrastructure is provisioned first."
+            echo "Run the infrastructure workflow before deploying to EKS."
+            exit 1
+          fi
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
