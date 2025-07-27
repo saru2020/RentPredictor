@@ -1,0 +1,45 @@
+name: Build and Push Docker Images
+on:
+  push:
+    branches: [main, infra, data]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      ECR_REPO_SPARK: ml-crash-course-spark
+      ECR_REPO_API: ml-crash-course-api
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Create ECR repositories
+        run: |
+          # Create Spark jobs repository
+          aws ecr describe-repositories --repository-names $ECR_REPO_SPARK --region $AWS_REGION || \
+          aws ecr create-repository --repository-name $ECR_REPO_SPARK --region $AWS_REGION
+          
+          # Create Model API repository
+          aws ecr describe-repositories --repository-names $ECR_REPO_API --region $AWS_REGION || \
+          aws ecr create-repository --repository-name $ECR_REPO_API --region $AWS_REGION
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push Spark job image
+        run: |
+          docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs
+          docker tag $ECR_REPO_SPARK:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest
+      - name: Build and push Model API image
+        run: |
+          docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api
+          docker tag $ECR_REPO_API:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest 

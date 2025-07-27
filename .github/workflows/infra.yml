@@ -1,0 +1,23 @@
+name: 'Provision AWS Infra'
+on:
+  push:
+    branches: [main, infra]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      - name: Terraform Init
+        run: terraform -chdir=infra init
+      - name: Terraform Plan
+        run: terraform -chdir=infra plan
+      - name: Terraform Apply
+        run: terraform -chdir=infra apply -auto-approve 

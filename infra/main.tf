@@ -7,10 +7,6 @@ resource "aws_s3_bucket" "ml_data" {
   force_destroy = true
 }
 
-resource "aws_ecr_repository" "ml_model_api" {
-  name = var.ecr_repo_name
-}
-
 module "eks" {
   source          = "terraform-aws-modules/eks/aws"
   cluster_name    = var.eks_cluster_name
@@ -29,7 +25,6 @@ module "eks" {
 
 variable "aws_region" {}
 variable "s3_bucket_name" {}
-variable "ecr_repo_name" {}
 variable "eks_cluster_name" {}
 variable "eks_subnets" { type = list(string) }
 variable "eks_vpc_id" {}

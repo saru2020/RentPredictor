@@ -8,11 +8,6 @@ variable "s3_bucket_name" {
   type        = string
 }
 
-variable "ecr_repo_name" {
-  description = "ECR repository for model API Docker images"
-  type        = string
-}
-
 variable "eks_cluster_name" {
   description = "EKS cluster name"
   type        = string
