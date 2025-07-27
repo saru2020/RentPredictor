@@ -38,6 +38,21 @@ jobs:
           terraform init \
             -backend-config="region=${{ secrets.AWS_REGION }}"
           
+          # Check if resources already exist and import them if needed
+          echo "Checking for existing resources..."
+          
+          # Check if S3 bucket exists
+          if aws s3api head-bucket --bucket ml-crash-course-data 2>/dev/null; then
+            echo "S3 bucket exists, importing to Terraform state..."
+            terraform import aws_s3_bucket.ml_data ml-crash-course-data || true
+          fi
+          
+          # Check if IAM role exists
+          if aws iam get-role --role-name ml-crash-course-cluster-cluster-role 2>/dev/null; then
+            echo "IAM role exists, importing to Terraform state..."
+            terraform import aws_iam_role.eks_cluster ml-crash-course-cluster-cluster-role || true
+          fi
+          
           # Always create/update infrastructure to ensure it exists
           echo "Planning infrastructure..."
           terraform plan \
