@@ -30,37 +30,33 @@ jobs:
         id: infra-check
         run: |
           cd infra
-          terraform init
           
-          # Check if infrastructure exists
-          if terraform output -raw s3_bucket_name >/dev/null 2>&1; then
-            echo "Infrastructure already exists, using existing resources"
-            S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
-            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
-            echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
-            echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
-            echo "Using existing S3 Bucket: $S3_BUCKET_NAME"
-            echo "Using existing EKS Cluster: $EKS_CLUSTER_NAME"
-          else
-            echo "Infrastructure not found. Creating infrastructure now..."
-            terraform plan \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster"
-            
-            terraform apply -auto-approve \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster"
-            
-            echo "Infrastructure created successfully!"
-            S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
-            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
-            echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
-            echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
-            echo "Created S3 Bucket: $S3_BUCKET_NAME"
-            echo "Created EKS Cluster: $EKS_CLUSTER_NAME"
-          fi
+          # Create S3 bucket for Terraform state if it doesn't exist
+          aws s3 mb s3://ml-crash-course-terraform-state --region ${{ secrets.AWS_REGION }} || true
+          
+          # Initialize Terraform with backend using dynamic region
+          terraform init \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+          
+          # Always create/update infrastructure to ensure it exists
+          echo "Planning infrastructure..."
+          terraform plan \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="s3_bucket_name=ml-crash-course-data" \
+            -var="eks_cluster_name=ml-crash-course-cluster" \
+            -out=tfplan
+          
+          echo "Applying infrastructure..."
+          terraform apply tfplan
+          
+          echo "Getting infrastructure outputs..."
+          S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "ml-crash-course-data")
+          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null || echo "ml-crash-course-cluster")
+          
+          echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "Using S3 Bucket: $S3_BUCKET_NAME"
+          echo "Using EKS Cluster: $EKS_CLUSTER_NAME"
 
   # Step 2: Upload Dataset to S3
   upload-data:
