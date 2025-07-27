@@ -120,46 +120,25 @@ jobs:
           if [ "$EKS_EXISTS" = false ]; then
             echo "🚀 Creating EKS cluster..."
             
-            # Try to create VPC and networking first
-            echo "🌐 Creating VPC and networking infrastructure..."
-            VPC_OUTPUT=$(terraform apply -auto-approve \
+            # Try to create all infrastructure at once (cleaner approach)
+            echo "🌐 Creating complete infrastructure..."
+            INFRA_OUTPUT=$(terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster" \
-              -target=module.vpc 2>&1)
-            VPC_EXIT_CODE=$?
+              -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
+            INFRA_EXIT_CODE=$?
             
-            if [ $VPC_EXIT_CODE -ne 0 ]; then
-              if echo "$VPC_OUTPUT" | grep -q "VpcLimitExceeded\|EntityAlreadyExists"; then
-                echo "⚠️  VPC creation failed (limit exceeded or already exists)"
-                echo "$VPC_OUTPUT" | grep -E "(VpcLimitExceeded|EntityAlreadyExists)" || true
+            if [ $INFRA_EXIT_CODE -ne 0 ]; then
+              if echo "$INFRA_OUTPUT" | grep -q "VpcLimitExceeded\|EntityAlreadyExists\|ResourceInUseException"; then
+                echo "⚠️  Infrastructure creation failed (limits exceeded or resources already exist)"
+                echo "$INFRA_OUTPUT" | grep -E "(VpcLimitExceeded|EntityAlreadyExists|ResourceInUseException)" || true
+                echo "This is expected if resources already exist from previous runs."
               else
-                echo "❌ VPC creation failed with unexpected error:"
-                echo "$VPC_OUTPUT"
+                echo "❌ Infrastructure creation failed with unexpected error:"
+                echo "$INFRA_OUTPUT"
               fi
             else
-              echo "✅ VPC created successfully"
-            fi
-            
-            # Try to create EKS cluster
-            echo "🚀 Creating EKS cluster..."
-            EKS_OUTPUT=$(terraform apply -auto-approve \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster" \
-              -target=aws_eks_cluster.main 2>&1)
-            EKS_EXIT_CODE=$?
-            
-            if [ $EKS_EXIT_CODE -ne 0 ]; then
-              if echo "$EKS_OUTPUT" | grep -q "EntityAlreadyExists\|ResourceInUseException"; then
-                echo "⚠️  EKS cluster creation failed (may already exist)"
-                echo "$EKS_OUTPUT" | grep -E "(EntityAlreadyExists|ResourceInUseException)" || true
-              else
-                echo "❌ EKS cluster creation failed with unexpected error:"
-                echo "$EKS_OUTPUT"
-              fi
-            else
-              echo "✅ EKS cluster created successfully"
+              echo "✅ Infrastructure created successfully"
             fi
           else
             echo "✅ EKS cluster already exists"

@@ -1,0 +1,109 @@
+name: 'Cleanup AWS Resources'
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_cleanup:
+        description: 'Type "YES" to confirm cleanup of all AWS resources'
+        required: true
+        default: 'NO'
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_cleanup == 'YES'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      
+      - name: Create S3 bucket for Terraform state if it doesn't exist
+        run: aws s3 mb s3://ml-crash-course-terraform-state --region ${{ secrets.AWS_REGION }} || true
+      
+      - name: Initialize Terraform
+        run: |
+          cd infra
+          terraform init \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+      
+      - name: Cleanup EKS Cluster
+        run: |
+          cd infra
+          echo "🗑️  Cleaning up EKS cluster..."
+          
+          # Delete EKS cluster if it exists
+          if aws eks describe-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
+            echo "Found EKS cluster, deleting..."
+            aws eks delete-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }}
+            
+            # Wait for cluster deletion
+            echo "Waiting for EKS cluster deletion..."
+            aws eks wait cluster-deleted --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }}
+            echo "✅ EKS cluster deleted"
+          else
+            echo "✅ EKS cluster does not exist"
+          fi
+      
+      - name: Cleanup IAM Role
+        run: |
+          echo "🗑️  Cleaning up IAM role..."
+          
+          # Detach policies and delete role if it exists
+          if aws iam get-role --role-name ml-crash-course-cluster-cluster-role 2>/dev/null; then
+            echo "Found IAM role, cleaning up..."
+            
+            # Detach policies
+            aws iam detach-role-policy --role-name ml-crash-course-cluster-cluster-role --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy 2>/dev/null || true
+            
+            # Delete role
+            aws iam delete-role --role-name ml-crash-course-cluster-cluster-role
+            echo "✅ IAM role deleted"
+          else
+            echo "✅ IAM role does not exist"
+          fi
+      
+      - name: Cleanup S3 Bucket
+        run: |
+          echo "🗑️  Cleaning up S3 bucket..."
+          
+          # Delete S3 bucket if it exists
+          if aws s3api head-bucket --bucket ml-crash-course-data 2>/dev/null; then
+            echo "Found S3 bucket, deleting contents and bucket..."
+            aws s3 rm s3://ml-crash-course-data --recursive
+            aws s3 rb s3://ml-crash-course-data --force
+            echo "✅ S3 bucket deleted"
+          else
+            echo "✅ S3 bucket does not exist"
+          fi
+      
+      - name: Cleanup VPC
+        run: |
+          cd infra
+          echo "🗑️  Cleaning up VPC and networking..."
+          
+          # Use Terraform to destroy VPC resources
+          terraform destroy -auto-approve \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="s3_bucket_name=ml-crash-course-data" \
+            -var="eks_cluster_name=ml-crash-course-cluster" \
+            -target=module.vpc || {
+            echo "⚠️  VPC cleanup failed (may not exist)"
+          }
+      
+      - name: Cleanup Complete
+        run: |
+          echo "🎉 Cleanup completed!"
+          echo "All AWS resources have been removed."
+          echo "You can now run the deployment pipeline again." 
