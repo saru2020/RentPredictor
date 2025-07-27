@@ -408,13 +408,51 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+      - name: Ensure infrastructure is ready
+        run: |
+          echo "🔍 Ensuring infrastructure is ready..."
+          
+          # Check if EKS cluster exists and is active
+          CLUSTER_STATUS=$(aws eks describe-cluster \
+            --name $EKS_CLUSTER_NAME \
+            --region $AWS_REGION \
+            --query 'cluster.status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          if [ "$CLUSTER_STATUS" != "ACTIVE" ]; then
+            echo "❌ EKS cluster is not active (status: $CLUSTER_STATUS)"
+            echo "🔧 Please ensure the infrastructure step runs successfully first"
+            exit 1
+          fi
+          
+          # Check if node group exists
+          NODEGROUP_STATUS=$(aws eks describe-nodegroup \
+            --cluster-name $EKS_CLUSTER_NAME \
+            --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+            --region $AWS_REGION \
+            --query 'nodegroup.status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          if [ "$NODEGROUP_STATUS" != "ACTIVE" ]; then
+            echo "❌ Node group is not active (status: $NODEGROUP_STATUS)"
+            echo "🔧 Please ensure the infrastructure step runs successfully first"
+            exit 1
+          fi
+          
+          echo "✅ Infrastructure is ready!"
       - name: Verify EKS cluster access
         run: |
           echo "Verifying access to EKS cluster: $EKS_CLUSTER_NAME"
+          
+          # Update kubeconfig first
+          echo "🔧 Updating kubeconfig for EKS cluster..."
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+          
+          # Test cluster access
           kubectl get nodes || {
-            echo "⚠️  Could not access EKS cluster, updating kubeconfig..."
-            aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
-            kubectl get nodes
+            echo "⚠️  Could not access EKS cluster, checking cluster status..."
+            aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION
+            echo "Cluster access failed, but continuing..."
           }
       - name: Check EKS cluster resources
         run: |
@@ -443,6 +481,39 @@ jobs:
             echo "❌ No nodes found in EKS cluster!"
             echo "🔧 Creating node group for EKS cluster..."
             
+            # Create the required IAM role for EKS node groups
+            echo "🔐 Creating IAM role for EKS node groups..."
+            aws iam create-role \
+              --role-name AmazonEKSNodeRole \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": {
+                      "Service": "ec2.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                  }
+                ]
+              }' || {
+              echo "⚠️  IAM role creation failed (may already exist)"
+            }
+            
+            # Attach required policies
+            echo "🔐 Attaching policies to IAM role..."
+            aws iam attach-role-policy \
+              --role-name AmazonEKSNodeRole \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy || echo "⚠️  Worker policy attachment failed"
+            
+            aws iam attach-role-policy \
+              --role-name AmazonEKSNodeRole \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy || echo "⚠️  CNI policy attachment failed"
+            
+            aws iam attach-role-policy \
+              --role-name AmazonEKSNodeRole \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly || echo "⚠️  ECR policy attachment failed"
+            
             # Create a node group using eksctl or AWS CLI
             aws eks create-nodegroup \
               --cluster-name $EKS_CLUSTER_NAME \
@@ -468,23 +539,8 @@ jobs:
           
           if [ "$NODEGROUP_STATUS" = "NOT_FOUND" ] || [ "$NODEGROUP_STATUS" != "ACTIVE" ]; then
             echo "⚠️  Node group not found or not active (status: $NODEGROUP_STATUS)"
-            echo "🔧 Forcing Terraform apply to create/update node group..."
-            
-            cd infra
-            terraform apply -auto-approve \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster"
-            
-            echo "⏳ Waiting for node group to be active..."
-            aws eks wait nodegroup-active \
-              --cluster-name $EKS_CLUSTER_NAME \
-              --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
-              --region $AWS_REGION || {
-              echo "⚠️  Node group not ready yet, but continuing..."
-            }
-            
-            cd ..
+            echo "🔧 Node group needs to be created via Terraform in the infrastructure step"
+            echo "Please ensure the infrastructure step runs successfully to create the node group"
           else
             echo "✅ Node group is active (status: $NODEGROUP_STATUS)"
           fi
