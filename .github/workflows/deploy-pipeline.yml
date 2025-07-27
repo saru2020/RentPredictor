@@ -216,6 +216,13 @@ jobs:
           aws eks wait cluster-active --name "$EKS_CLUSTER_NAME" --region ${{ secrets.AWS_REGION }}
           echo "✅ EKS cluster is ready!"
           
+          # Wait for node group to be ready
+          echo "⏳ Waiting for EKS node group to be ready..."
+          aws eks wait nodegroup-active --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$EKS_CLUSTER_NAME-node-group" --region ${{ secrets.AWS_REGION }} || {
+            echo "⚠️  Node group not ready yet, but continuing..."
+          }
+          echo "✅ EKS node group is ready!"
+          
           # Update kubeconfig for the cluster
           echo "🔧 Updating kubeconfig for EKS cluster..."
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "$EKS_CLUSTER_NAME"
@@ -289,29 +296,99 @@ jobs:
       - name: Build and push Spark job image
         run: |
           echo "Building Spark job image..."
-          docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs || {
-            echo "❌ Failed to build Spark job image"
-            exit 1
-          }
-          docker tag $ECR_REPO_SPARK:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest || {
-            echo "❌ Failed to push Spark job image"
-            exit 1
-          }
-          echo "✅ Spark job image built and pushed successfully"
+          
+          # Check if image already exists in ECR
+          ECR_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_SPARK:latest"
+          echo "Checking if Spark image exists: $ECR_IMAGE_URI"
+          
+          # Check if image exists and get its creation date
+          if aws ecr describe-images --repository-name $ECR_REPO_SPARK --image-ids imageTag=latest --region $AWS_REGION 2>/dev/null; then
+            echo "✅ Spark job image exists in ECR"
+            
+            # Check if Dockerfile or requirements have changed recently
+            DOCKERFILE_TIME=$(stat -c %Y spark_jobs/Dockerfile 2>/dev/null || echo "0")
+            REQUIREMENTS_TIME=$(stat -c %Y spark_jobs/requirements.txt 2>/dev/null || echo "0")
+            LATEST_TIME=$((DOCKERFILE_TIME > REQUIREMENTS_TIME ? DOCKERFILE_TIME : REQUIREMENTS_TIME))
+            
+            # Get image creation time (approximate - use current time minus 1 hour as fallback)
+            IMAGE_TIME=$(date -d "1 hour ago" +%s)
+            
+            if [ $LATEST_TIME -gt $IMAGE_TIME ]; then
+              echo "📦 Source files changed recently, rebuilding Spark job image..."
+              docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs || {
+                echo "❌ Failed to build Spark job image"
+                exit 1
+              }
+              docker tag $ECR_REPO_SPARK:latest $ECR_IMAGE_URI
+              docker push $ECR_IMAGE_URI || {
+                echo "❌ Failed to push Spark job image"
+                exit 1
+              }
+              echo "✅ Spark job image rebuilt and pushed successfully"
+            else
+              echo "⏭️  Source files unchanged, skipping Spark job image build"
+            fi
+          else
+            echo "📦 Spark job image not found, building..."
+            docker build -t $ECR_REPO_SPARK:latest -f spark_jobs/Dockerfile ./spark_jobs || {
+              echo "❌ Failed to build Spark job image"
+              exit 1
+            }
+            docker tag $ECR_REPO_SPARK:latest $ECR_IMAGE_URI
+            docker push $ECR_IMAGE_URI || {
+              echo "❌ Failed to push Spark job image"
+              exit 1
+            }
+            echo "✅ Spark job image built and pushed successfully"
+          fi
       - name: Build and push Model API image
         run: |
           echo "Building Model API image..."
-          docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api || {
-            echo "❌ Failed to build Model API image"
-            exit 1
-          }
-          docker tag $ECR_REPO_API:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest || {
-            echo "❌ Failed to push Model API image"
-            exit 1
-          }
-          echo "✅ Model API image built and pushed successfully"
+          
+          # Check if image already exists in ECR
+          ECR_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest"
+          echo "Checking if Model API image exists: $ECR_IMAGE_URI"
+          
+          # Check if image exists and get its creation date
+          if aws ecr describe-images --repository-name $ECR_REPO_API --image-ids imageTag=latest --region $AWS_REGION 2>/dev/null; then
+            echo "✅ Model API image exists in ECR"
+            
+            # Check if Dockerfile or requirements have changed recently
+            DOCKERFILE_TIME=$(stat -c %Y model_api/Dockerfile 2>/dev/null || echo "0")
+            REQUIREMENTS_TIME=$(stat -c %Y model_api/requirements.txt 2>/dev/null || echo "0")
+            LATEST_TIME=$((DOCKERFILE_TIME > REQUIREMENTS_TIME ? DOCKERFILE_TIME : REQUIREMENTS_TIME))
+            
+            # Get image creation time (approximate - use current time minus 1 hour as fallback)
+            IMAGE_TIME=$(date -d "1 hour ago" +%s)
+            
+            if [ $LATEST_TIME -gt $IMAGE_TIME ]; then
+              echo "📦 Source files changed recently, rebuilding Model API image..."
+              docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api || {
+                echo "❌ Failed to build Model API image"
+                exit 1
+              }
+              docker tag $ECR_REPO_API:latest $ECR_IMAGE_URI
+              docker push $ECR_IMAGE_URI || {
+                echo "❌ Failed to push Model API image"
+                exit 1
+              }
+              echo "✅ Model API image rebuilt and pushed successfully"
+            else
+              echo "⏭️  Source files unchanged, skipping Model API image build"
+            fi
+          else
+            echo "📦 Model API image not found, building..."
+            docker build -t $ECR_REPO_API:latest -f model_api/Dockerfile ./model_api || {
+              echo "❌ Failed to build Model API image"
+              exit 1
+            }
+            docker tag $ECR_REPO_API:latest $ECR_IMAGE_URI
+            docker push $ECR_IMAGE_URI || {
+              echo "❌ Failed to push Model API image"
+              exit 1
+            }
+            echo "✅ Model API image built and pushed successfully"
+          fi
 
   # Step 4: Deploy to EKS
   deploy-to-eks:
@@ -359,6 +436,25 @@ jobs:
             echo "⚠️  Warning: Only $NODE_COUNT nodes available. Airflow may have resource constraints."
           else
             echo "✅ Sufficient nodes available for Airflow deployment"
+          fi
+          
+          # Check if we need to create node groups
+          if [ "$NODE_COUNT" -eq 0 ]; then
+            echo "❌ No nodes found in EKS cluster!"
+            echo "🔧 Creating node group for EKS cluster..."
+            
+            # Create a node group using eksctl or AWS CLI
+            aws eks create-nodegroup \
+              --cluster-name $EKS_CLUSTER_NAME \
+              --nodegroup-name ml-nodegroup \
+              --node-role arn:aws:iam::$AWS_ACCOUNT_ID:role/AmazonEKSNodeRole \
+              --subnets subnet-0250220481d506c84 subnet-07b6e0ec2278b2f9a \
+              --instance-types t3.small \
+              --scaling-config minSize=1,maxSize=3,desiredSize=2 \
+              --region $AWS_REGION || {
+              echo "⚠️  Failed to create node group, trying alternative approach..."
+              echo "Please create node groups manually in the AWS console"
+            }
           fi
       - name: Set up Helm
         uses: azure/setup-helm@v3
@@ -536,10 +632,22 @@ jobs:
           TOTAL_PODS=$(kubectl get pods -l app=model-api --no-headers | wc -l)
           echo "📊 Pod status: $READY_PODS/$TOTAL_PODS pods ready"
           
+          # Check why pods are pending
+          echo "🔍 Diagnosing pod scheduling issues..."
+          kubectl describe pods -l app=model-api
+          
+          # Check node resources
+          echo "📊 Node resources:"
+          kubectl describe nodes | grep -A 10 "Allocated resources" || echo "⚠️  Could not get node resource information"
+          
+          # Check if there are any nodes available
+          echo "📊 Available nodes:"
+          kubectl get nodes
+          
           if [ "$READY_PODS" -gt 0 ]; then
             echo "✅ Model API deployment is progressing"
           else
-            echo "⚠️  Model API pods not ready yet"
+            echo "⚠️  Model API pods not ready yet - checking for scheduling issues"
           fi
       - name: Wait for deployments to be ready
         run: |

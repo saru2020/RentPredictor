@@ -105,6 +105,66 @@ resource "aws_security_group" "eks_cluster" {
   }
 }
 
+# Create IAM role for EKS node groups
+resource "aws_iam_role" "eks_node_group" {
+  name = "${var.eks_cluster_name}-node-group-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# Attach required policies for EKS node groups
+resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+  role       = aws_iam_role.eks_node_group.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.eks_node_group.name
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_container_registry_read_only" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.eks_node_group.name
+}
+
+# Create EKS node group
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.eks_cluster_name}-node-group"
+  node_role_arn   = aws_iam_role.eks_node_group.arn
+  subnet_ids      = module.vpc.private_subnets
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 3
+    min_size     = 1
+  }
+
+  instance_types = ["t3.small"]
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.ec2_container_registry_read_only,
+  ]
+
+  tags = {
+    Name = "${var.eks_cluster_name}-node-group"
+  }
+}
+
 output "eks_cluster_name" {
   description = "Name of the EKS cluster"
   value       = aws_eks_cluster.main.name
@@ -118,4 +178,9 @@ output "eks_cluster_endpoint" {
 output "s3_bucket_name" {
   description = "Name of the S3 bucket for ML data"
   value       = aws_s3_bucket.ml_data.bucket
+}
+
+output "eks_node_group_name" {
+  description = "Name of the EKS node group"
+  value       = aws_eks_node_group.main.node_group_name
 }
