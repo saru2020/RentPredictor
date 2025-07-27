@@ -196,23 +196,9 @@ jobs:
           # Get outputs from Terraform
           echo "Getting infrastructure outputs..."
           
-          # Capture Terraform outputs by writing to files first
-          echo "Capturing S3 bucket name..."
-          terraform output -raw s3_bucket_name > s3_bucket_name.txt 2>/dev/null || echo "ml-crash-course-data" > s3_bucket_name.txt
-          S3_BUCKET_NAME=$(cat s3_bucket_name.txt | tr -d '\n\r')
-          
-          echo "Capturing EKS cluster name..."
-          terraform output -raw eks_cluster_name > eks_cluster_name.txt 2>/dev/null || echo "ml-crash-course-cluster" > eks_cluster_name.txt
-          EKS_CLUSTER_NAME=$(cat eks_cluster_name.txt | tr -d '\n\r')
-          
-          # Fallback to known values if extraction failed
-          if [ -z "$S3_BUCKET_NAME" ] || [ "$S3_BUCKET_NAME" = "" ]; then
-            S3_BUCKET_NAME="ml-crash-course-data"
-          fi
-          
-          if [ -z "$EKS_CLUSTER_NAME" ] || [ "$EKS_CLUSTER_NAME" = "" ]; then
-            EKS_CLUSTER_NAME="ml-crash-course-cluster"
-          fi
+          # Use known resource names since they are fixed in Terraform configuration
+          S3_BUCKET_NAME="ml-crash-course-data"
+          EKS_CLUSTER_NAME="ml-crash-course-cluster"
           
           echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
           echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
