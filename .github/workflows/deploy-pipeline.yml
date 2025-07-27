@@ -69,56 +69,64 @@ jobs:
             echo "❌ EKS cluster 'ml-crash-course-cluster' does not exist"
           fi
           
-          # Always run Terraform to ensure infrastructure is in desired state
-          echo "🚀 Running Terraform to ensure infrastructure is in desired state..."
-          
-          # Create/update infrastructure (will handle existing resources gracefully)
-          echo "Planning infrastructure..."
-          PLAN_OUTPUT=$(terraform plan \
-            -var="aws_region=${{ secrets.AWS_REGION }}" \
-            -var="s3_bucket_name=ml-crash-course-data" \
-            -var="eks_cluster_name=ml-crash-course-cluster" \
-            -out=tfplan 2>&1)
-          PLAN_EXIT_CODE=$?
-          
-          if [ $PLAN_EXIT_CODE -ne 0 ]; then
-            echo "⚠️  Plan completed with warnings:"
-            echo "$PLAN_OUTPUT"
+          # Use the variables we checked to determine if Terraform is needed
+          if [ "$S3_EXISTS" = true ] && [ "$IAM_EXISTS" = true ] && [ "$EKS_EXISTS" = true ]; then
+            echo "🎉 All required resources already exist! Skipping Terraform execution."
+            echo "Using existing resources:"
+            echo "  - S3 Bucket: ml-crash-course-data"
+            echo "  - IAM Role: ml-crash-course-cluster-cluster-role"
+            echo "  - EKS Cluster: ml-crash-course-cluster"
           else
-            echo "✅ Plan completed successfully"
-          fi
-          
-          echo "Applying infrastructure..."
-          
-          # Check if plan file exists
-          if [ ! -f "tfplan" ]; then
-            echo "⚠️  Plan file not found, applying directly..."
-            APPLY_OUTPUT=$(terraform apply -auto-approve \
+            echo "🚀 Some resources don't exist. Running Terraform to create missing infrastructure..."
+            
+            # Create/update infrastructure (will handle existing resources gracefully)
+            echo "Planning infrastructure..."
+            PLAN_OUTPUT=$(terraform plan \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
-            APPLY_EXIT_CODE=$?
-          else
-            echo "Using plan file for apply..."
-            APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
-            APPLY_EXIT_CODE=$?
-          fi
-          
-          if [ $APPLY_EXIT_CODE -ne 0 ]; then
-            # Check for specific "already exists" errors
-            if echo "$APPLY_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|EntityAlreadyExists\|ResourceInUseException"; then
-              echo "⚠️  Apply completed with warnings (some resources already exist):"
-              echo "$APPLY_OUTPUT" | grep -E "(BucketAlreadyOwnedByYou|EntityAlreadyExists|ResourceInUseException)" || true
-              echo "This is expected behavior - continuing with deployment..."
+              -var="eks_cluster_name=ml-crash-course-cluster" \
+              -out=tfplan 2>&1)
+            PLAN_EXIT_CODE=$?
+            
+            if [ $PLAN_EXIT_CODE -ne 0 ]; then
+              echo "⚠️  Plan completed with warnings:"
+              echo "$PLAN_OUTPUT"
             else
-              echo "❌ Apply failed with unexpected errors:"
-              echo "$APPLY_OUTPUT"
-              echo "Full apply output for debugging:"
-              echo "$APPLY_OUTPUT"
-              exit 1
+              echo "✅ Plan completed successfully"
             fi
-          else
-            echo "✅ Apply completed successfully"
+            
+            echo "Applying infrastructure..."
+            
+            # Check if plan file exists
+            if [ ! -f "tfplan" ]; then
+              echo "⚠️  Plan file not found, applying directly..."
+              APPLY_OUTPUT=$(terraform apply -auto-approve \
+                -var="aws_region=${{ secrets.AWS_REGION }}" \
+                -var="s3_bucket_name=ml-crash-course-data" \
+                -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
+              APPLY_EXIT_CODE=$?
+            else
+              echo "Using plan file for apply..."
+              APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
+              APPLY_EXIT_CODE=$?
+            fi
+            
+            if [ $APPLY_EXIT_CODE -ne 0 ]; then
+              # Check for specific "already exists" errors
+              if echo "$APPLY_OUTPUT" | grep -q "BucketAlreadyOwnedByYou\|EntityAlreadyExists\|ResourceInUseException"; then
+                echo "⚠️  Apply completed with warnings (some resources already exist):"
+                echo "$APPLY_OUTPUT" | grep -E "(BucketAlreadyOwnedByYou|EntityAlreadyExists|ResourceInUseException)" || true
+                echo "This is expected behavior - continuing with deployment..."
+              else
+                echo "❌ Apply failed with unexpected errors:"
+                echo "$APPLY_OUTPUT"
+                echo "Full apply output for debugging:"
+                echo "$APPLY_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "✅ Apply completed successfully"
+            fi
           fi
           
           echo "Getting infrastructure outputs..."
