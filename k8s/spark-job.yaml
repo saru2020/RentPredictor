@@ -10,6 +10,7 @@ spec:
       labels:
         app: ml-spark-job
     spec:
+      serviceAccountName: spark-sa
       containers:
       - name: spark-job
         image: <ECR_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/ml-crash-course-spark:latest
@@ -19,7 +20,17 @@ spec:
         - name: S3_KEY
           value: "House_Rent_Dataset.csv"
         - name: AWS_REGION
-          value: "<AWS_REGION>"
+          value: "us-east-2"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: secret-access-key
         resources:
           requests:
             memory: "1Gi"

@@ -12,6 +12,7 @@ spec:
       labels:
         app: model-api
     spec:
+      serviceAccountName: spark-sa
       containers:
       - name: model-api
         image: <ECR_IMAGE_URI>
@@ -23,4 +24,16 @@ spec:
         - name: S3_KEY
           value: "House_Rent_Dataset.csv"
         - name: S3_ENDPOINT_URL
-          value: "https://s3.amazonaws.com" 
+          value: "https://s3.amazonaws.com"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: secret-access-key
+        - name: AWS_REGION
+          value: "us-east-2" 
