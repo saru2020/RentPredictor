@@ -1,0 +1,120 @@
+# Simplified Airflow configuration for EKS deployment without persistent storage
+executor: KubernetesExecutor
+
+# PostgreSQL configuration with ephemeral storage
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+# Redis configuration for Celery (if needed)
+redis:
+  enabled: false
+
+# Web server configuration
+web:
+  service:
+    type: LoadBalancer
+  port: 8080
+  replicas: 1
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Scheduler configuration
+scheduler:
+  replicas: 1
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  logCleanup:
+    enabled: false
+
+# Worker configuration
+workers:
+  replicas: 2
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  logCleanup:
+    enabled: false
+
+# Triggerer configuration
+triggerer:
+  replicas: 1
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Logs configuration - use ephemeral storage
+logs:
+  persistence:
+    enabled: false
+
+# DAGs configuration - use ephemeral storage
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: false
+
+# Airflow configuration
+config:
+  AIRFLOW__CORE__EXECUTOR: KubernetesExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__WEBSERVER__SECRET_KEY: "your-secret-key-here"
+  AIRFLOW__CORE__FERNET_KEY: "5T-cpX4XxlEcr8w9Eudb4xW3hBuRVhI14SgJAH7wHjs="
+
+# Default user configuration
+webserver:
+  defaultUser:
+    enabled: true
+    role: Admin
+    username: admin
+    email: admin@example.com
+    firstName: admin
+    lastName: user
+    password: admin
+
+# Security context
+securityContext:
+  runAsUser: 50000
+  fsGroup: 0
+
+# Service account
+serviceAccount:
+  create: true
+  name: "airflow"
+
+# Ingress configuration (optional)
+ingress:
+  enabled: false
+
+# Service monitor for Prometheus (optional)
+serviceMonitor:
+  enabled: false 

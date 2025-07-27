@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-dags
+  namespace: airflow
+data:
+  ml_pipeline.py: |
+    from airflow import DAG
+    from airflow.operators.python import PythonOperator
+    from airflow.operators.bash import BashOperator
+    from airflow.utils.dates import days_ago
+    from datetime import timedelta
+    import subprocess
+    import time
+    import os
+
+    default_args = {
+        'owner': 'airflow',
+        'depends_on_past': False,
+        'retries': 1,
+        'retry_delay': timedelta(minutes=5),
+    }
+
+    dag = DAG(
+        'ml_pipeline',
+        default_args=default_args,
+        description='ML pipeline for house rent prediction',
+        schedule_interval=None,
+        start_date=days_ago(1),
+        catchup=False,
+    )
+
+    def run_spark_job():
+        """Run the Spark training job with proper error handling"""
+        try:
+            print("Starting Spark training job...")
+            
+            # Set environment variables for AWS/S3
+            env_vars = {
+                'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID', ''),
+                'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY', ''),
+                'AWS_REGION': os.getenv('AWS_REGION', 'us-east-2'),
+                'S3_BUCKET': os.getenv('S3_BUCKET', 'ml-crash-course-data'),
+                'S3_KEY': os.getenv('S3_KEY', 'House_Rent_Dataset.csv'),
+                'MODEL_PATH': os.getenv('MODEL_PATH', 's3a://ml-crash-course-data/model')
+            }
+            
+            # Create the spark-submit command
+            cmd = [
+                "spark-submit",
+                "--packages", "org.apache.hadoop:hadoop-aws:3.3.2",
+                "--conf", "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem",
+                "--conf", f"spark.hadoop.fs.s3a.access.key={env_vars['AWS_ACCESS_KEY_ID']}",
+                "--conf", f"spark.hadoop.fs.s3a.secret.key={env_vars['AWS_SECRET_ACCESS_KEY']}",
+                "--conf", f"spark.hadoop.fs.s3a.endpoint=https://s3.{env_vars['AWS_REGION']}.amazonaws.com",
+                "/opt/bitnami/spark_jobs/preprocess_and_train.py"
+            ]
+            
+            print(f"Executing command: {' '.join(cmd)}")
+            
+            # Execute the command
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env=env_vars,
+                timeout=3600  # 1 hour timeout
+            )
+            
+            if result.returncode == 0:
+                print("✅ Spark job completed successfully!")
+                print("Output:", result.stdout)
+                return True
+            else:
+                print("❌ Spark job failed!")
+                print("Error:", result.stderr)
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("❌ Spark job timed out after 1 hour")
+            return False
+        except Exception as e:
+            print(f"❌ Error running Spark job: {str(e)}")
+            return False
+
+    def check_data_availability():
+        """Check if the dataset is available in S3"""
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+            
+            s3_client = boto3.client('s3')
+            bucket = os.getenv('S3_BUCKET', 'ml-crash-course-data')
+            key = os.getenv('S3_KEY', 'House_Rent_Dataset.csv')
+            
+            try:
+                s3_client.head_object(Bucket=bucket, Key=key)
+                print(f"✅ Dataset found in S3: s3://{bucket}/{key}")
+                return True
+            except ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    print(f"❌ Dataset not found in S3: s3://{bucket}/{key}")
+                    return False
+                else:
+                    raise e
+        except Exception as e:
+            print(f"❌ Error checking data availability: {str(e)}")
+            return False
+
+    # Define tasks
+    check_data = PythonOperator(
+        task_id='check_data_availability',
+        python_callable=check_data_availability,
+        dag=dag,
+    )
+
+    run_spark_training = PythonOperator(
+        task_id='run_spark_training',
+        python_callable=run_spark_job,
+        dag=dag,
+    )
+
+    # Set task dependencies
+    check_data >> run_spark_training 

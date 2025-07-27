@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ml-spark-job
+  labels:
+    app: ml-spark-job
+spec:
+  template:
+    metadata:
+      labels:
+        app: ml-spark-job
+    spec:
+      containers:
+      - name: spark-job
+        image: <ECR_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/ml-crash-course-spark:latest
+        env:
+        - name: S3_BUCKET
+          value: "ml-crash-course-data"
+        - name: S3_KEY
+          value: "House_Rent_Dataset.csv"
+        - name: AWS_REGION
+          value: "<AWS_REGION>"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      restartPolicy: Never
+  backoffLimit: 3 

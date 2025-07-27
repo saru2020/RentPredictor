@@ -46,6 +46,41 @@ jobs:
             -var="aws_region=${{ secrets.AWS_REGION }}" \
             -var="s3_bucket_name=ml-crash-course-data" \
             -var="eks_cluster_name=ml-crash-course-cluster"
+      - name: Cleanup Kubernetes Resources
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          echo "🧹 Cleaning up Kubernetes resources before destroy..."
+          
+          # Get EKS cluster name from Terraform state
+          cd infra
+          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null || echo "ml-crash-course-cluster")
+          cd ..
+          
+          echo "🔧 Updating kubeconfig for cluster: $EKS_CLUSTER_NAME"
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "$EKS_CLUSTER_NAME" || {
+            echo "⚠️  Could not update kubeconfig, cluster may already be destroyed"
+            exit 0
+          }
+          
+          # Delete Airflow resources
+          echo "🗑️  Deleting Airflow resources..."
+          kubectl delete namespace airflow --ignore-not-found=true || true
+          
+          # Delete Model API resources
+          echo "🗑️  Deleting Model API resources..."
+          kubectl delete deployment model-api --ignore-not-found=true || true
+          kubectl delete service model-api --ignore-not-found=true || true
+          
+          # Delete EBS CSI driver
+          echo "🗑️  Deleting EBS CSI driver..."
+          helm uninstall aws-ebs-csi-driver -n kube-system --ignore-not-found=true || true
+          
+          # Delete any remaining PVCs
+          echo "🗑️  Deleting remaining PVCs..."
+          kubectl delete pvc --all --all-namespaces --ignore-not-found=true || true
+          
+          echo "✅ Kubernetes cleanup completed"
+          
       - name: Terraform Destroy
         if: github.event.inputs.action == 'destroy'
         run: |

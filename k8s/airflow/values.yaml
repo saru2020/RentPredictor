@@ -1,21 +1,158 @@
-# Minimal Airflow configuration for EKS deployment
+# Airflow configuration for EKS deployment with proper resource allocation and storage
 executor: KubernetesExecutor
+
+# PostgreSQL configuration with proper storage
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "gp2"
+      size: 8Gi
+      accessMode: ReadWriteOnce
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+
+# Redis configuration for Celery (if needed)
+redis:
+  enabled: false
 
 # Web server configuration
 web:
   service:
     type: LoadBalancer
   port: 8080
+  replicas: 1
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Scheduler configuration
+scheduler:
+  replicas: 1
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+  logCleanup:
+    enabled: false
 
 # Worker configuration
 workers:
-  replicas: 2
-
-# Disable persistence for simplicity
-logs:
-  persistence:
+  replicas: 1
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+  logCleanup:
     enabled: false
 
+# Triggerer configuration
+triggerer:
+  replicas: 1
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "100m"
+
+# Logs configuration
+logs:
+  persistence:
+    enabled: true
+    storageClass: "gp2"
+    size: 5Gi
+
+# DAGs configuration
 dags:
   persistence:
-    enabled: false 
+    enabled: true
+    storageClass: "gp2"
+    size: 1Gi
+  gitSync:
+    enabled: false
+
+# Airflow configuration
+config:
+  AIRFLOW__CORE__EXECUTOR: KubernetesExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__WEBSERVER__SECRET_KEY: "your-secret-key-here"
+  AIRFLOW__CORE__FERNET_KEY: "5T-cpX4XxlEcr8w9Eudb4xW3hBuRVhI14SgJAH7wHjs="
+
+# Default user configuration
+webserver:
+  defaultUser:
+    enabled: true
+    role: Admin
+    username: admin
+    email: admin@example.com
+    firstName: admin
+    lastName: user
+    password: admin
+
+# Security context
+securityContext:
+  runAsUser: 50000
+  fsGroup: 0
+
+# Service account
+serviceAccount:
+  create: true
+  name: "airflow"
+
+# Pod template for Kubernetes executor
+executor:
+  kubernetes:
+    podTemplateFile: ""
+    deleteWorkerPods: true
+    deleteWorkerPodsOnFailure: true
+    workerPodsCreationBatchSize: 1
+    workerPodsQueuedCheckInterval: 30
+    workerPodsPendingTimeout: 300
+    workerPodsSchedulingTimeout: 300
+    workerPodsStartupTimeout: 300
+    workerPodsTerminationTimeout: 300
+    workerPodsUpdateStrategy: RollingUpdate
+    workerPodsVolumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: airflow-shared-storage
+    workerPodsVolumeMounts:
+      - name: shared-storage
+        mountPath: /opt/airflow/shared
+    workerPodsSecurityContext:
+      runAsUser: 50000
+      fsGroup: 0
+    workerPodsResources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+
+# Ingress configuration (optional)
+ingress:
+  enabled: false
+
+# Service monitor for Prometheus (optional)
+serviceMonitor:
+  enabled: false 

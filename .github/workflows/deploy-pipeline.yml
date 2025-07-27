@@ -482,7 +482,10 @@ jobs:
             terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
-              -var="eks_cluster_name=ml-crash-course-cluster" || {
+              -var="eks_cluster_name=ml-crash-course-cluster"
+            
+            echo "⏳ Waiting for node group to be ready..."
+            aws eks wait nodegroup-active --cluster-name ml-crash-course-cluster --nodegroup-name ml-crash-course-cluster-node-group --region ${{ secrets.AWS_REGION }} || {
               echo "❌ Terraform apply failed"
               echo "🔍 Checking Terraform state..."
               terraform state list
@@ -654,15 +657,94 @@ jobs:
           fi
       - name: Set up Helm
         uses: azure/setup-helm@v3
+      - name: Install AWS EBS CSI Driver
+        run: |
+          echo "🔧 Installing AWS EBS CSI Driver..."
+          
+          # Add EBS CSI driver Helm repository
+          helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+          helm repo update
+          
+          # Get EKS cluster OIDC provider ID
+          echo "🔍 Getting EKS cluster OIDC provider ID..."
+          OIDC_ID=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME --query 'cluster.identity.oidc.issuer' --output text | cut -d'/' -f5)
+          echo "📋 OIDC Provider ID: $OIDC_ID"
+          
+          # Check if OIDC provider exists, create if not
+          echo "🔍 Checking if OIDC provider exists..."
+          if ! aws iam list-open-id-connect-providers --query "OpenIDConnectProviderList[?contains(Arn, '$OIDC_ID')]" --output text | grep -q "$OIDC_ID"; then
+            echo "📦 Creating OIDC provider..."
+            aws iam create-open-id-connect-provider \
+              --url "https://oidc.eks.$AWS_REGION.amazonaws.com/id/$OIDC_ID" \
+              --thumbprint-list 9e99a48a9960b14926bb7f3b02e22da2b0ab7280 || {
+              echo "⚠️  Failed to create OIDC provider, but continuing..."
+            }
+          else
+            echo "✅ OIDC provider already exists"
+          fi
+          
+          # Create IAM role for EBS CSI driver if it doesn't exist
+          echo "🔍 Checking if EBS CSI driver IAM role exists..."
+          if ! aws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole 2>/dev/null; then
+            echo "📦 Creating IAM role for EBS CSI driver..."
+            aws iam create-role \
+              --role-name AmazonEKS_EBS_CSI_DriverRole \
+              --assume-role-policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Federated\":\"arn:aws:iam::$AWS_ACCOUNT_ID:oidc-provider/oidc.eks.$AWS_REGION.amazonaws.com/id/$OIDC_ID\"},\"Action\":\"sts:AssumeRoleWithWebIdentity\",\"Condition\":{\"StringEquals\":{\"oidc.eks.$AWS_REGION.amazonaws.com/id/$OIDC_ID:sub\":\"system:serviceaccount:kube-system:ebs-csi-controller-sa\"}}}]}" || {
+              echo "⚠️  Failed to create IAM role, but continuing..."
+            }
+          else
+            echo "✅ IAM role already exists"
+          fi
+          
+          # Attach EBS CSI driver policy to the role
+          echo "🔗 Attaching EBS CSI driver policy to IAM role..."
+          aws iam attach-role-policy \
+            --role-name AmazonEKS_EBS_CSI_DriverRole \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy || {
+            echo "⚠️  Failed to attach policy, but continuing..."
+          }
+          
+          # Install EBS CSI driver
+          echo "📦 Installing EBS CSI driver..."
+          helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+            --namespace kube-system \
+            --create-namespace || {
+            echo "⚠️  Failed to install EBS CSI driver, but continuing..."
+          }
+          
+          # Wait for EBS CSI driver to be ready
+          echo "⏳ Waiting for EBS CSI driver to be ready..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-ebs-csi-driver -n kube-system --timeout=300s || {
+            echo "⚠️  EBS CSI driver not ready within timeout, but continuing..."
+          }
+          
+          # Annotate the EBS CSI controller service account with IAM role
+          echo "🏷️  Annotating EBS CSI controller service account..."
+          kubectl annotate serviceaccount ebs-csi-controller-sa -n kube-system \
+            eks.amazonaws.com/role-arn=arn:aws:iam::$AWS_ACCOUNT_ID:role/AmazonEKS_EBS_CSI_DriverRole --overwrite || {
+            echo "⚠️  Failed to annotate service account, but continuing..."
+          }
+          
+          # Restart EBS CSI controller pods to pick up the new configuration
+          echo "🔄 Restarting EBS CSI controller pods..."
+          kubectl delete pods -l app=ebs-csi-controller -n kube-system || {
+            echo "⚠️  Failed to restart EBS CSI controller pods, but continuing..."
+          }
+          
+          # Wait for EBS CSI controller pods to be ready
+          echo "⏳ Waiting for EBS CSI controller pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app=ebs-csi-controller -n kube-system --timeout=300s || {
+            echo "⚠️  EBS CSI controller pods not ready within timeout, but continuing..."
+          }
+          
+          # Verify EBS CSI driver is running
+          echo "🔍 Verifying EBS CSI driver status..."
+          kubectl get pods -n kube-system | grep ebs || echo "⚠️  EBS CSI driver pods not found"
+          
+          echo "✅ EBS CSI driver installation completed"
       - name: Deploy Airflow via Helm
         run: |
           echo "Deploying Airflow via Helm..."
-          
-          # Skip Airflow deployment for now due to Helm chart issues
-          echo "⏭️  Skipping Airflow deployment due to Helm chart compatibility issues"
-          echo "The core ML pipeline (Model API) will be deployed without Airflow"
-          echo "Airflow can be deployed separately later if needed"
-          exit 0
           
           # Check if we should skip Airflow deployment
           if [ "${SKIP_AIRFLOW:-false}" = "true" ]; then
@@ -670,57 +752,93 @@ jobs:
             exit 0
           fi
           
-          # Clean up any stuck Helm operations
-          echo "🧹 Cleaning up any stuck Helm operations..."
-          helm list -n airflow | grep airflow && {
-            echo "Found existing Airflow release, cleaning up..."
-            helm uninstall airflow -n airflow || echo "Cleanup failed, continuing..."
-          }
+          # Clean up any existing failed deployment
+          echo "🧹 Cleaning up any existing failed deployment..."
+          kubectl delete pvc --all -n airflow --force --grace-period=0 2>/dev/null || true
+          kubectl delete pods --all -n airflow --force --grace-period=0 2>/dev/null || true
+          helm uninstall airflow -n airflow 2>/dev/null || true
           
-          helm repo add apache-airflow https://airflow.apache.org
+          # Wait for cleanup
+          echo "⏳ Waiting for cleanup to complete..."
+          sleep 30
+          
+          # Check cluster resources before deployment
+          echo "🔍 Checking cluster resources before Airflow deployment..."
+          echo "📊 Available nodes:"
+          kubectl get nodes -o wide
+          
+          echo "📊 Node resources:"
+          kubectl describe nodes | grep -A 5 "Allocated resources" || echo "⚠️  Could not get resource information"
+          
+          # Check if we have enough resources for Airflow
+          NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+          echo "📊 Total nodes: $NODE_COUNT"
+          
+          if [ "$NODE_COUNT" -lt 2 ]; then
+            echo "⚠️  Warning: Only $NODE_COUNT nodes available. Airflow may have resource constraints."
+          else
+            echo "✅ Sufficient nodes available for Airflow deployment"
+          fi
+          
+          # Add Helm repositories
+          echo "📦 Adding Helm repositories..."
+          helm repo add apache-airflow https://airflow.apache.org/charts
           helm repo update
           
-          # Check available versions
-          echo "📋 Checking available Airflow Helm chart versions..."
-          helm search repo apache-airflow/airflow --versions | head -10
+          # Create namespace
+          echo "📁 Creating namespace..."
+          kubectl create namespace airflow --dry-run=client -o yaml | kubectl apply -f -
           
-          # Try to install with specific version and better error handling
-          echo "Installing Airflow with specific version..."
+          # Apply DAGs ConfigMap
+          echo "📋 Applying DAGs ConfigMap..."
+          kubectl apply -f k8s/airflow/dags-configmap.yaml || {
+            echo "⚠️  Failed to apply DAGs ConfigMap, but continuing..."
+          }
           
-          # Use timeout to prevent hanging
-          timeout 15m helm upgrade --install airflow apache-airflow/airflow \
-            --version 1.12.0 \
+          # Deploy Airflow with new configuration
+          echo "🚀 Deploying Airflow with new configuration..."
+          
+          # Check if EBS CSI driver is running
+          echo "🔍 Checking EBS CSI driver status..."
+          EBS_CSI_PODS=$(kubectl get pods -n kube-system | grep ebs | grep Running | wc -l)
+          echo "📊 EBS CSI driver pods running: $EBS_CSI_PODS"
+          
+          if [ "$EBS_CSI_PODS" -eq 0 ]; then
+            echo "⚠️  Warning: No EBS CSI driver pods running. PVCs may not be provisioned."
+          else
+            echo "✅ EBS CSI driver is running"
+          fi
+          helm upgrade --install airflow apache-airflow/airflow \
+            --version 8.9.0 \
             -f k8s/airflow/values.yaml \
             --namespace airflow \
             --create-namespace \
-            --wait --timeout 10m || {
+            --wait \
+            --timeout 15m \
+            --set postgresql.primary.persistence.storageClass=gp2 \
+            --set logs.persistence.storageClass=gp2 \
+            --set dags.persistence.storageClass=gp2 || {
             echo "⚠️  Failed with specific version, trying latest version..."
-            timeout 15m helm upgrade --install airflow apache-airflow/airflow \
+            helm upgrade --install airflow apache-airflow/airflow \
               -f k8s/airflow/values.yaml \
               --namespace airflow \
               --create-namespace \
-              --wait --timeout 10m || {
+              --wait \
+              --timeout 15m \
+              --set postgresql.primary.persistence.storageClass=gp2 \
+              --set logs.persistence.storageClass=gp2 \
+              --set dags.persistence.storageClass=gp2 || {
               echo "❌ Failed to deploy Airflow with both versions"
-              echo "Trying minimal configuration..."
-              timeout 15m helm upgrade --install airflow apache-airflow/airflow \
-                --set executor=KubernetesExecutor \
-                --set web.service.type=LoadBalancer \
-                --set workers.replicas=2 \
-                --namespace airflow \
-                --create-namespace \
-                --wait --timeout 10m || {
-                echo "❌ Failed to deploy Airflow with minimal config"
-                echo "⚠️  Skipping Airflow deployment and continuing with other components..."
-              }
+              echo "⚠️  Skipping Airflow deployment and continuing with other components..."
             }
           }
-          echo "✅ Airflow deployment attempt completed"
+          echo "✅ Airflow deployment completed"
       - name: Monitor Airflow deployment
         run: |
           echo "🔍 Monitoring Airflow deployment progress..."
           
-          # Wait a bit for resources to be created
-          sleep 30
+          # Wait for resources to be created
+          sleep 60
           
           # Check if namespace was created
           if kubectl get namespace airflow; then
@@ -737,6 +855,31 @@ jobs:
             # Check for deployments
             echo "📊 Checking Airflow deployments..."
             kubectl get deployments -n airflow || echo "⚠️  No deployments found yet"
+            
+            # Check for PVCs
+            echo "📊 Checking Airflow PVCs..."
+            kubectl get pvc -n airflow || echo "⚠️  No PVCs found yet"
+            
+            # Wait for PostgreSQL to be ready
+            echo "⏳ Waiting for PostgreSQL to be ready..."
+            kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n airflow --timeout=300s || {
+              echo "⚠️  PostgreSQL not ready within timeout, checking logs..."
+              kubectl logs -l app.kubernetes.io/name=postgresql -n airflow --tail=50 || echo "No logs available"
+            }
+            
+            # Wait for webserver to be ready
+            echo "⏳ Waiting for webserver to be ready..."
+            kubectl wait --for=condition=ready pod -l component=webserver -n airflow --timeout=300s || {
+              echo "⚠️  Webserver not ready within timeout, checking logs..."
+              kubectl logs -l component=webserver -n airflow --tail=50 || echo "No logs available"
+            }
+            
+            # Wait for scheduler to be ready
+            echo "⏳ Waiting for scheduler to be ready..."
+            kubectl wait --for=condition=ready pod -l component=scheduler -n airflow --timeout=300s || {
+              echo "⚠️  Scheduler not ready within timeout, checking logs..."
+              kubectl logs -l component=scheduler -n airflow --tail=50 || echo "No logs available"
+            }
             
           else
             echo "❌ Airflow namespace not found"
@@ -948,4 +1091,29 @@ jobs:
           
           # Save the API URL to a file for easy access
           echo "http://$MODEL_API_URL:$MODEL_API_PORT" > api_endpoint.txt
-          echo "API endpoint saved to api_endpoint.txt" 
+          echo "API endpoint saved to api_endpoint.txt"
+          
+          echo ""
+          echo "🔥 Spark Job Triggering:"
+          echo "======================="
+          echo ""
+          echo "📋 To trigger the Spark job, use one of these methods:"
+          echo ""
+          echo "1️⃣  Direct Kubernetes Job:"
+          echo "   kubectl apply -f k8s/spark-job.yaml"
+          echo ""
+          echo "2️⃣  Manual kubectl command:"
+          echo "   kubectl create job ml-spark-job --from=cronjob/ml-spark-job"
+          echo ""
+          echo "3️⃣  Check job status:"
+          echo "   kubectl get jobs"
+          echo "   kubectl logs job/ml-spark-job"
+          echo ""
+          echo "4️⃣  Monitor job progress:"
+          echo "   kubectl describe job ml-spark-job"
+          echo ""
+          echo "🔧 Spark Job Configuration:"
+          echo "  - S3 Bucket: ml-crash-course-data"
+          echo "  - Dataset: House_Rent_Dataset.csv"
+          echo "  - Image: ml-crash-course-spark:latest"
+          echo "  - Resources: 1-2 Gi memory, 0.5-1 CPU" 

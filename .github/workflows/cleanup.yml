@@ -1,16 +1,20 @@
-name: 'Cleanup AWS Resources'
+name: 'Cleanup Infrastructure'
 on:
   workflow_dispatch:
     inputs:
-      confirm_cleanup:
-        description: 'Type "YES" to confirm cleanup of all AWS resources'
+      cleanup_type:
+        description: 'Type of cleanup to perform'
         required: true
-        default: 'NO'
+        default: 'airflow'
+        type: choice
+        options:
+        - airflow
+        - all
+        - ebs-csi
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
-    if: github.event.inputs.confirm_cleanup == 'YES'
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -20,90 +24,127 @@ jobs:
         uses: actions/checkout@v3
       
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
       
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-      
-      - name: Create S3 bucket for Terraform state if it doesn't exist
-        run: aws s3 mb s3://ml-crash-course-terraform-state --region ${{ secrets.AWS_REGION }} || true
-      
-      - name: Initialize Terraform
+      - name: Get EKS cluster name
         run: |
           cd infra
-          terraform init \
-            -backend-config="region=${{ secrets.AWS_REGION }}"
-      
-      - name: Cleanup EKS Cluster
-        run: |
-          cd infra
-          echo "🗑️  Cleaning up EKS cluster..."
-          
-          # Delete EKS cluster if it exists
-          if aws eks describe-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
-            echo "Found EKS cluster, deleting..."
-            aws eks delete-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }}
-            
-            # Wait for cluster deletion
-            echo "Waiting for EKS cluster deletion..."
-            aws eks wait cluster-deleted --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }}
-            echo "✅ EKS cluster deleted"
+          if terraform output eks_cluster_name > /dev/null 2>&1; then
+            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+            echo "EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME" >> $GITHUB_ENV
+            echo "Found EKS cluster: $EKS_CLUSTER_NAME"
           else
-            echo "✅ EKS cluster does not exist"
+            echo "Error: EKS cluster not found in Terraform state."
+            exit 1
           fi
       
-      - name: Cleanup IAM Role
+      - name: Update kubeconfig
         run: |
-          echo "🗑️  Cleaning up IAM role..."
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+      
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+      
+      - name: Cleanup Airflow
+        if: github.event.inputs.cleanup_type == 'airflow' || github.event.inputs.cleanup_type == 'all'
+        run: |
+          echo "🧹 Cleaning up Airflow deployment..."
           
-          # Detach policies and delete role if it exists
-          if aws iam get-role --role-name ml-crash-course-cluster-cluster-role 2>/dev/null; then
-            echo "Found IAM role, cleaning up..."
+          # Check if Airflow namespace exists
+          if kubectl get namespace airflow 2>/dev/null; then
+            echo "📁 Airflow namespace found, cleaning up..."
             
-            # Detach policies
-            aws iam detach-role-policy --role-name ml-crash-course-cluster-cluster-role --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy 2>/dev/null || true
+            # Delete all PVCs first
+            echo "🗑️  Deleting Airflow PVCs..."
+            kubectl delete pvc --all -n airflow --force --grace-period=0 2>/dev/null || true
             
-            # Delete role
-            aws iam delete-role --role-name ml-crash-course-cluster-cluster-role
-            echo "✅ IAM role deleted"
+            # Delete all pods
+            echo "🗑️  Deleting Airflow pods..."
+            kubectl delete pods --all -n airflow --force --grace-period=0 2>/dev/null || true
+            
+            # Uninstall Helm release
+            echo "🗑️  Uninstalling Airflow Helm release..."
+            helm uninstall airflow -n airflow 2>/dev/null || true
+            
+            # Delete namespace
+            echo "🗑️  Deleting Airflow namespace..."
+            kubectl delete namespace airflow --force --grace-period=0 2>/dev/null || true
+            
+            echo "✅ Airflow cleanup completed"
           else
-            echo "✅ IAM role does not exist"
+            echo "ℹ️  Airflow namespace not found, nothing to clean up"
           fi
       
-      - name: Cleanup S3 Bucket
+      - name: Cleanup EBS CSI Driver
+        if: github.event.inputs.cleanup_type == 'ebs-csi' || github.event.inputs.cleanup_type == 'all'
         run: |
-          echo "🗑️  Cleaning up S3 bucket..."
+          echo "🧹 Cleaning up EBS CSI Driver..."
           
-          # Delete S3 bucket if it exists
-          if aws s3api head-bucket --bucket ml-crash-course-data 2>/dev/null; then
-            echo "Found S3 bucket, deleting contents and bucket..."
-            aws s3 rm s3://ml-crash-course-data --recursive
-            aws s3 rb s3://ml-crash-course-data --force
-            echo "✅ S3 bucket deleted"
+          # Check if EBS CSI driver is installed
+          if helm list -n kube-system | grep aws-ebs-csi-driver; then
+            echo "📦 EBS CSI driver found, uninstalling..."
+            helm uninstall aws-ebs-csi-driver -n kube-system || true
+            
+            # Wait for pods to be deleted
+            echo "⏳ Waiting for EBS CSI driver pods to be deleted..."
+            kubectl wait --for=delete pod -l app.kubernetes.io/name=aws-ebs-csi-driver -n kube-system --timeout=300s 2>/dev/null || true
+            
+            echo "✅ EBS CSI driver cleanup completed"
           else
-            echo "✅ S3 bucket does not exist"
+            echo "ℹ️  EBS CSI driver not found, nothing to clean up"
           fi
       
-      - name: Cleanup VPC
+      - name: Cleanup EBS Volumes
+        if: github.event.inputs.cleanup_type == 'all'
         run: |
-          cd infra
-          echo "🗑️  Cleaning up VPC and networking..."
+          echo "🧹 Cleaning up orphaned EBS volumes..."
           
-          # Use Terraform to destroy VPC resources
-          terraform destroy -auto-approve \
-            -var="aws_region=${{ secrets.AWS_REGION }}" \
-            -var="s3_bucket_name=ml-crash-course-data" \
-            -var="eks_cluster_name=ml-crash-course-cluster" \
-            -target=module.vpc || {
-            echo "⚠️  VPC cleanup failed (may not exist)"
+          # Get cluster name for volume filtering
+          CLUSTER_NAME=$(kubectl config current-context | sed 's/.*cluster\///')
+          
+          # List EBS volumes that might be orphaned
+          echo "📋 Checking for orphaned EBS volumes..."
+          aws ec2 describe-volumes \
+            --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
+            --query 'Volumes[?State==`available`].[VolumeId,Tags[?Key==`Name`].Value|[0]]' \
+            --output table || {
+            echo "⚠️  Could not check for orphaned volumes"
           }
+          
+          echo "ℹ️  Note: Orphaned EBS volumes should be manually deleted from AWS Console if needed"
+      
+      - name: Verify Cleanup
+        run: |
+          echo "🔍 Verifying cleanup results..."
+          
+          # Check for remaining Airflow resources
+          if [ "${{ github.event.inputs.cleanup_type }}" = "airflow" ] || [ "${{ github.event.inputs.cleanup_type }}" = "all" ]; then
+            echo "📊 Checking for remaining Airflow resources..."
+            kubectl get all -n airflow 2>/dev/null || echo "✅ No Airflow resources found"
+            kubectl get pvc -n airflow 2>/dev/null || echo "✅ No Airflow PVCs found"
+          fi
+          
+          # Check for remaining EBS CSI resources
+          if [ "${{ github.event.inputs.cleanup_type }}" = "ebs-csi" ] || [ "${{ github.event.inputs.cleanup_type }}" = "all" ]; then
+            echo "📊 Checking for remaining EBS CSI resources..."
+            kubectl get pods -n kube-system | grep ebs || echo "✅ No EBS CSI pods found"
+          fi
+          
+          echo "✅ Cleanup verification completed"
       
       - name: Cleanup Complete
         run: |
-          echo "🎉 Cleanup completed!"
-          echo "All AWS resources have been removed."
-          echo "You can now run the deployment pipeline again." 
+          echo "🎉 Cleanup completed successfully!"
+          echo ""
+          echo "📋 Summary:"
+          echo "- Cleanup type: ${{ github.event.inputs.cleanup_type }}"
+          echo "- EKS cluster: $EKS_CLUSTER_NAME"
+          echo "- AWS region: $AWS_REGION"
+          echo ""
+          echo "💡 Next steps:"
+          echo "- If you cleaned up 'all', you may need to reinstall EBS CSI driver before deploying Airflow again"
+          echo "- If you cleaned up 'airflow', you can redeploy it using the main deployment workflow" 
