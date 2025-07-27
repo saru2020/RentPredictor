@@ -506,25 +506,62 @@ jobs:
             echo "❌ Failed to deploy Model API service"
             exit 1
           }
-          kubectl patch service model-api -p '{"spec": {"ports": [{"port": 5001, "targetPort": 5000}]}}' || {
-            echo "⚠️  Failed to patch service, but continuing..."
-          }
+          
+          # Wait a moment for the service to be created
+          sleep 10
+          
+          # Verify the service was created correctly
+          echo "🔍 Verifying Model API service..."
+          kubectl get service model-api -o yaml
+          
           echo "✅ Model API deployed successfully"
+      - name: Check Model API deployment status
+        run: |
+          echo "🔍 Checking Model API deployment status..."
+          
+          # Check deployment status
+          echo "📊 Model API deployment:"
+          kubectl get deployment model-api
+          
+          # Check pod status
+          echo "📊 Model API pods:"
+          kubectl get pods -l app=model-api
+          
+          # Check service status
+          echo "📊 Model API service:"
+          kubectl get service model-api
+          
+          # Check if pods are ready
+          READY_PODS=$(kubectl get pods -l app=model-api --no-headers | grep -c "Running")
+          TOTAL_PODS=$(kubectl get pods -l app=model-api --no-headers | wc -l)
+          echo "📊 Pod status: $READY_PODS/$TOTAL_PODS pods ready"
+          
+          if [ "$READY_PODS" -gt 0 ]; then
+            echo "✅ Model API deployment is progressing"
+          else
+            echo "⚠️  Model API pods not ready yet"
+          fi
       - name: Wait for deployments to be ready
         run: |
           echo "⏳ Waiting for deployments to be ready..."
           
-          # Wait for Airflow webserver
-          kubectl wait --for=condition=available --timeout=300s deployment/airflow-webserver -n airflow || {
-            echo "⚠️  Airflow webserver not ready within timeout, but continuing..."
-          }
-          
-          # Wait for Model API
+          # Wait for Model API deployment
+          echo "⏳ Waiting for Model API deployment to be ready..."
           kubectl wait --for=condition=available --timeout=300s deployment/model-api || {
             echo "⚠️  Model API not ready within timeout, but continuing..."
           }
           
-          echo "✅ Deployments are ready!"
+          # Check if Airflow namespace exists before waiting for it
+          if kubectl get namespace airflow 2>/dev/null; then
+            echo "⏳ Waiting for Airflow webserver deployment to be ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/airflow-webserver -n airflow || {
+              echo "⚠️  Airflow webserver not ready within timeout, but continuing..."
+            }
+          else
+            echo "⏭️  Airflow namespace not found, skipping Airflow wait"
+          fi
+          
+          echo "✅ Deployment wait completed!"
       - name: Deployment Complete
         run: |
           echo "🎉 Complete deployment pipeline finished successfully!"
