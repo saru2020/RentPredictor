@@ -66,11 +66,13 @@ jobs:
           fi
           
           # Check if EKS cluster exists
-          if aws eks describe-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
+          EKS_CLUSTER_CHECK=$(aws eks describe-cluster --name ml-crash-course-cluster --region ${{ secrets.AWS_REGION }} 2>&1)
+          if [ $? -eq 0 ]; then
             echo "✅ EKS cluster 'ml-crash-course-cluster' already exists"
             EKS_EXISTS=true
           else
             echo "❌ EKS cluster 'ml-crash-course-cluster' does not exist"
+            echo "Error details: $EKS_CLUSTER_CHECK"
           fi
           
           # Use the variables we checked to determine if Terraform is needed
@@ -110,11 +112,14 @@ jobs:
                 -var="eks_cluster_name=ml-crash-course-cluster" 2>&1)
               APPLY_EXIT_CODE=$?
             else
-                          echo "Using plan file for apply..."
-            APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
-            APPLY_EXIT_CODE=$?
-            echo "Apply exit code: $APPLY_EXIT_CODE"
+              echo "Using plan file for apply..."
+              APPLY_OUTPUT=$(terraform apply tfplan 2>&1)
+              APPLY_EXIT_CODE=$?
             fi
+            
+            echo "Apply exit code: $APPLY_EXIT_CODE"
+            echo "Apply output:"
+            echo "$APPLY_OUTPUT"
             
             if [ $APPLY_EXIT_CODE -ne 0 ]; then
               echo "❌ Apply failed with exit code: $APPLY_EXIT_CODE"
