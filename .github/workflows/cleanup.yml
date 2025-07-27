@@ -239,6 +239,23 @@ jobs:
                  echo "⏳ Waiting for EKS cluster to be deleted..."
                  sleep 180
                  
+                 # Clean up load balancers that might be left behind
+                 echo "🗑️  Cleaning up any remaining load balancers..."
+                 LBS=$(aws elbv2 describe-load-balancers --query 'LoadBalancers[?VpcId==`'$VPC_ID'`].LoadBalancerArn' --output text 2>/dev/null || echo "")
+                 if [ -n "$LBS" ] && [ "$LBS" != "None" ]; then
+                   echo "⚠️  Found load balancers: $LBS"
+                   for LB in $LBS; do
+                     if [ "$LB" != "None" ] && [ -n "$LB" ]; then
+                       echo "🗑️  Deleting load balancer: $LB"
+                       aws elbv2 delete-load-balancer --load-balancer-arn $LB || true
+                     fi
+                   done
+                   echo "⏳ Waiting for load balancers to be deleted..."
+                   sleep 60
+                 else
+                   echo "ℹ️  No load balancers found"
+                 fi
+                 
                  # Clean up NAT gateways
                  echo "🗑️  Cleaning up NAT gateways..."
                  NAT_GATEWAYS=$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text 2>/dev/null || echo "")
@@ -289,14 +306,30 @@ jobs:
                  
                  # Clean up network interfaces
                  echo "🗑️  Cleaning up network interfaces..."
-                 ENIS=$(aws ec2 describe-network-interfaces --filter "Name=vpc-id,Values=$VPC_ID" --query 'NetworkInterfaces[?Status!=`deleted`].NetworkInterfaceId' --output text 2>/dev/null || echo "")
+                 ENIS=$(aws ec2 describe-network-interfaces --filter "Name=vpc-id,Values=$VPC_ID" --query 'NetworkInterfaces[?Status!=`deleted`].[NetworkInterfaceId,Attachment.AttachmentId]' --output text 2>/dev/null || echo "")
                  if [ -n "$ENIS" ] && [ "$ENIS" != "None" ]; then
-                   for ENI in $ENIS; do
-                     if [ "$ENI" != "None" ] && [ -n "$ENI" ]; then
-                       echo "🗑️  Deleting network interface: $ENI"
-                       aws ec2 delete-network-interface --network-interface-id $ENI || true
+                   echo "📋 Network interfaces to clean up:"
+                   echo "$ENIS"
+                   
+                   # Parse the output to get ENI IDs and attachment IDs
+                   while read -r ENI_ID ATTACHMENT_ID; do
+                     if [ "$ENI_ID" != "None" ] && [ -n "$ENI_ID" ] && [ "$ENI_ID" != "NetworkInterfaceId" ]; then
+                       echo "🔍 Processing ENI: $ENI_ID"
+                       
+                       # If there's an attachment, detach it first
+                       if [ "$ATTACHMENT_ID" != "None" ] && [ -n "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "AttachmentId" ]; then
+                         echo "🗑️  Detaching ENI: $ENI_ID (attachment: $ATTACHMENT_ID)"
+                         aws ec2 detach-network-interface --attachment-id $ATTACHMENT_ID --force || echo "⚠️  Failed to detach ENI $ENI_ID"
+                         sleep 10
+                       fi
+                       
+                       # Now try to delete the ENI
+                       echo "🗑️  Deleting ENI: $ENI_ID"
+                       aws ec2 delete-network-interface --network-interface-id $ENI_ID || echo "⚠️  Failed to delete ENI $ENI_ID"
                      fi
-                   done
+                   done <<< "$ENIS"
+                 else
+                   echo "ℹ️  No network interfaces found"
                  fi
                  
                  # Clean up security groups (except default)
