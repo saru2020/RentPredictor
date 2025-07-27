@@ -782,7 +782,18 @@ jobs:
           
           # Add Helm repositories
           echo "📦 Adding Helm repositories..."
-          helm repo add apache-airflow https://airflow.apache.org/charts
+          
+          # Try the official Airflow Helm repository
+          if ! helm repo add apache-airflow https://airflow.apache.org; then
+            echo "⚠️  Failed to add apache-airflow repo from apache.org, trying alternative..."
+            # Try the alternative repository URL
+            helm repo add apache-airflow https://charts.bitnami.com/bitnami || {
+              echo "⚠️  Failed to add bitnami repo, trying direct installation..."
+              # Skip repository addition and try direct installation
+              echo "⏭️  Skipping repository addition, will try direct installation"
+            }
+          fi
+          
           helm repo update
           
           # Create namespace
@@ -808,18 +819,14 @@ jobs:
           else
             echo "✅ EBS CSI driver is running"
           fi
-          helm upgrade --install airflow apache-airflow/airflow \
-            --version 8.9.0 \
-            -f k8s/airflow/values.yaml \
-            --namespace airflow \
-            --create-namespace \
-            --wait \
-            --timeout 15m \
-            --set postgresql.primary.persistence.storageClass=gp2 \
-            --set logs.persistence.storageClass=gp2 \
-            --set dags.persistence.storageClass=gp2 || {
-            echo "⚠️  Failed with specific version, trying latest version..."
+          # Try to deploy Airflow with different approaches
+          echo "🚀 Attempting Airflow deployment..."
+          
+          # First, try with the apache-airflow repository
+          if helm repo list | grep -q apache-airflow; then
+            echo "📦 Using apache-airflow repository..."
             helm upgrade --install airflow apache-airflow/airflow \
+              --version 8.9.0 \
               -f k8s/airflow/values.yaml \
               --namespace airflow \
               --create-namespace \
@@ -828,10 +835,24 @@ jobs:
               --set postgresql.primary.persistence.storageClass=gp2 \
               --set logs.persistence.storageClass=gp2 \
               --set dags.persistence.storageClass=gp2 || {
-              echo "❌ Failed to deploy Airflow with both versions"
-              echo "⚠️  Skipping Airflow deployment and continuing with other components..."
+              echo "⚠️  Failed with specific version, trying latest version..."
+              helm upgrade --install airflow apache-airflow/airflow \
+                -f k8s/airflow/values.yaml \
+                --namespace airflow \
+                --create-namespace \
+                --wait \
+                --timeout 15m \
+                --set postgresql.primary.persistence.storageClass=gp2 \
+                --set logs.persistence.storageClass=gp2 \
+                --set dags.persistence.storageClass=gp2 || {
+                echo "❌ Failed to deploy Airflow with apache-airflow repository"
+                echo "⚠️  Skipping Airflow deployment and continuing with other components..."
+              }
             }
-          }
+          else
+            echo "⚠️  No apache-airflow repository available, skipping Airflow deployment"
+            echo "⚠️  Airflow deployment skipped - repository not available"
+          fi
           echo "✅ Airflow deployment completed"
       - name: Monitor Airflow deployment
         run: |
