@@ -5,12 +5,13 @@ on:
       cleanup_type:
         description: 'Type of cleanup to perform'
         required: true
-        default: 'airflow'
+        default: 'all'
         type: choice
         options:
-        - airflow
-        - all
-        - ebs-csi
+          - airflow
+          - ebs-csi
+          - infrastructure
+          - all
 
 jobs:
   cleanup:
@@ -30,57 +31,77 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
       
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.5.0"
+      
       - name: Get EKS cluster name
+        id: get_cluster_name
         run: |
           cd infra
+          
+          # Try to get cluster name from Terraform state
           if terraform output eks_cluster_name > /dev/null 2>&1; then
             EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
             echo "EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME" >> $GITHUB_ENV
-            echo "Found EKS cluster: $EKS_CLUSTER_NAME"
+            echo "Found EKS cluster in Terraform state: $EKS_CLUSTER_NAME"
           else
-            echo "Error: EKS cluster not found in Terraform state."
-            exit 1
+            # Try to find cluster by name pattern
+            echo "Terraform state not found, searching for EKS clusters..."
+            CLUSTER_NAME=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text | head -1)
+            
+            if [ -n "$CLUSTER_NAME" ] && [ "$CLUSTER_NAME" != "None" ]; then
+              echo "EKS_CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+              echo "Found EKS cluster: $CLUSTER_NAME"
+            else
+              echo "No EKS clusters found with expected naming pattern"
+              echo "EKS_CLUSTER_NAME=" >> $GITHUB_ENV
+            fi
           fi
-      
-      - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
       
       - name: Set up Helm
         uses: azure/setup-helm@v3
       
-      - name: Cleanup Airflow
+      - name: Cleanup Kubernetes Resources
         if: github.event.inputs.cleanup_type == 'airflow' || github.event.inputs.cleanup_type == 'all'
         run: |
-          echo "🧹 Cleaning up Airflow deployment..."
-          
-          # Check if Airflow namespace exists
-          if kubectl get namespace airflow 2>/dev/null; then
-            echo "📁 Airflow namespace found, cleaning up..."
+          if [ -n "$EKS_CLUSTER_NAME" ]; then
+            echo "🔧 Setting up kubectl for cluster: $EKS_CLUSTER_NAME"
+            aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
             
-            # Delete all PVCs first
-            echo "🗑️  Deleting Airflow PVCs..."
-            kubectl delete pvc --all -n airflow --force --grace-period=0 2>/dev/null || true
+            echo "🧹 Cleaning up Airflow deployment..."
             
-            # Delete all pods
-            echo "🗑️  Deleting Airflow pods..."
-            kubectl delete pods --all -n airflow --force --grace-period=0 2>/dev/null || true
-            
-            # Uninstall Helm release
-            echo "🗑️  Uninstalling Airflow Helm release..."
-            helm uninstall airflow -n airflow 2>/dev/null || true
-            
-            # Delete namespace
-            echo "🗑️  Deleting Airflow namespace..."
-            kubectl delete namespace airflow --force --grace-period=0 2>/dev/null || true
-            
-            echo "✅ Airflow cleanup completed"
+            # Check if Airflow namespace exists
+            if kubectl get namespace airflow 2>/dev/null; then
+              echo "📁 Airflow namespace found, cleaning up..."
+              
+              # Delete all PVCs first
+              echo "🗑️  Deleting Airflow PVCs..."
+              kubectl delete pvc --all -n airflow --force --grace-period=0 2>/dev/null || true
+              
+              # Delete all pods
+              echo "🗑️  Deleting Airflow pods..."
+              kubectl delete pods --all -n airflow --force --grace-period=0 2>/dev/null || true
+              
+              # Uninstall Helm release
+              echo "🗑️  Uninstalling Airflow Helm release..."
+              helm uninstall airflow -n airflow 2>/dev/null || true
+              
+              # Delete namespace
+              echo "🗑️  Deleting Airflow namespace..."
+              kubectl delete namespace airflow --force --grace-period=0 2>/dev/null || true
+              
+              echo "✅ Airflow cleanup completed"
+            else
+              echo "ℹ️  Airflow namespace not found, nothing to clean up"
+            fi
           else
-            echo "ℹ️  Airflow namespace not found, nothing to clean up"
+            echo "⚠️  No EKS cluster found, skipping Kubernetes cleanup"
           fi
       
       - name: Cleanup EBS CSI Driver
-        if: github.event.inputs.cleanup_type == 'ebs-csi' || github.event.inputs.cleanup_type == 'all'
+        if: (github.event.inputs.cleanup_type == 'ebs-csi' || github.event.inputs.cleanup_type == 'all') && env.EKS_CLUSTER_NAME != ''
         run: |
           echo "🧹 Cleaning up EBS CSI Driver..."
           
@@ -103,35 +124,114 @@ jobs:
         run: |
           echo "🧹 Cleaning up orphaned EBS volumes..."
           
-          # Get cluster name for volume filtering
-          CLUSTER_NAME=$(kubectl config current-context | sed 's/.*cluster\///')
+          # Find all EKS clusters to check for volumes
+          CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
           
-          # List EBS volumes that might be orphaned
-          echo "📋 Checking for orphaned EBS volumes..."
-          aws ec2 describe-volumes \
-            --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
-            --query 'Volumes[?State==`available`].[VolumeId,Tags[?Key==`Name`].Value|[0]]' \
-            --output table || {
-            echo "⚠️  Could not check for orphaned volumes"
-          }
+          for CLUSTER in $CLUSTERS; do
+            if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
+              echo "📋 Checking for orphaned EBS volumes for cluster: $CLUSTER"
+              
+              # List EBS volumes that might be orphaned
+              aws ec2 describe-volumes \
+                --filters "Name=tag:kubernetes.io/cluster/$CLUSTER,Values=owned" \
+                --query 'Volumes[?State==`available`].[VolumeId,Tags[?Key==`Name`].Value|[0]]' \
+                --output table || {
+                echo "⚠️  Could not check for orphaned volumes for cluster $CLUSTER"
+              }
+            fi
+          done
           
           echo "ℹ️  Note: Orphaned EBS volumes should be manually deleted from AWS Console if needed"
+      
+      - name: Cleanup Infrastructure
+        if: github.event.inputs.cleanup_type == 'infrastructure' || github.event.inputs.cleanup_type == 'all'
+        run: |
+          echo "🏗️  Cleaning up infrastructure resources..."
+          cd infra
+          
+          # Initialize Terraform if needed
+          if [ ! -d ".terraform" ]; then
+            echo "🔧 Initializing Terraform..."
+            terraform init
+          fi
+          
+          # Check if state exists and has resources
+          if terraform state list > /dev/null 2>&1; then
+            echo "🗑️  Destroying infrastructure with Terraform..."
+            terraform destroy -auto-approve -var="aws_region=$AWS_REGION"
+            echo "✅ Infrastructure destroyed successfully"
+          else
+            echo "ℹ️  No Terraform state found, cleaning up resources manually..."
+            
+            # Clean up EKS clusters
+            CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
+            
+            for CLUSTER in $CLUSTERS; do
+              if [ "$CLUSTER" != "None" ] && [ -n "$CLUSTER" ]; then
+                echo "🗑️  Deleting EKS cluster: $CLUSTER"
+                aws eks delete-cluster --name $CLUSTER --region $AWS_REGION || true
+              fi
+            done
+            
+            # Clean up S3 buckets
+            BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text)
+            
+            for BUCKET in $BUCKETS; do
+              if [ "$BUCKET" != "None" ] && [ -n "$BUCKET" ]; then
+                echo "🗑️  Deleting S3 bucket: $BUCKET"
+                aws s3 rb s3://$BUCKET --force || true
+              fi
+            done
+            
+            # Clean up IAM roles
+            ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text)
+            
+            for ROLE in $ROLES; do
+              if [ "$ROLE" != "None" ] && [ -n "$ROLE" ]; then
+                echo "🗑️  Deleting IAM role: $ROLE"
+                # Detach policies first
+                POLICIES=$(aws iam list-attached-role-policies --role-name $ROLE --query 'AttachedPolicies[].PolicyArn' --output text)
+                for POLICY in $POLICIES; do
+                  if [ "$POLICY" != "None" ] && [ -n "$POLICY" ]; then
+                    aws iam detach-role-policy --role-name $ROLE --policy-arn $POLICY || true
+                  fi
+                done
+                aws iam delete-role --role-name $ROLE || true
+              fi
+            done
+            
+            echo "✅ Manual infrastructure cleanup completed"
+          fi
       
       - name: Verify Cleanup
         run: |
           echo "🔍 Verifying cleanup results..."
           
-          # Check for remaining Airflow resources
-          if [ "${{ github.event.inputs.cleanup_type }}" = "airflow" ] || [ "${{ github.event.inputs.cleanup_type }}" = "all" ]; then
-            echo "📊 Checking for remaining Airflow resources..."
-            kubectl get all -n airflow 2>/dev/null || echo "✅ No Airflow resources found"
-            kubectl get pvc -n airflow 2>/dev/null || echo "✅ No Airflow PVCs found"
+          # Check for remaining EKS clusters
+          echo "📊 Checking for remaining EKS clusters..."
+          REMAINING_CLUSTERS=$(aws eks list-clusters --query 'clusters[?contains(name, `ml-crash-course`) || contains(name, `rentpredictor`) || contains(name, `rent-predictor`)].name' --output text)
+          if [ "$REMAINING_CLUSTERS" = "None" ] || [ -z "$REMAINING_CLUSTERS" ]; then
+            echo "✅ No EKS clusters found"
+          else
+            echo "⚠️  Remaining clusters: $REMAINING_CLUSTERS"
           fi
           
-          # Check for remaining EBS CSI resources
-          if [ "${{ github.event.inputs.cleanup_type }}" = "ebs-csi" ] || [ "${{ github.event.inputs.cleanup_type }}" = "all" ]; then
-            echo "📊 Checking for remaining EBS CSI resources..."
-            kubectl get pods -n kube-system | grep ebs || echo "✅ No EBS CSI pods found"
+          # Check for remaining S3 buckets
+          echo "📊 Checking for remaining S3 buckets..."
+          REMAINING_BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `ml-crash-course`) || contains(Name, `rentpredictor`) || contains(Name, `rent-predictor`)].Name' --output text)
+          if [ "$REMAINING_BUCKETS" = "None" ] || [ -z "$REMAINING_BUCKETS" ]; then
+            echo "✅ No S3 buckets found"
+          else
+            echo "⚠️  Remaining buckets: $REMAINING_BUCKETS"
+          fi
+          
+          # Check for remaining IAM roles
+          echo "📊 Checking for remaining IAM roles..."
+          REMAINING_ROLES=$(aws iam list-roles --query 'Roles[?contains(RoleName, `ml-crash-course`) || contains(RoleName, `rentpredictor`) || contains(RoleName, `rent-predictor`)].RoleName' --output text)
+          if [ "$REMAINING_ROLES" = "None" ] || [ -z "$REMAINING_ROLES" ]; then
+            echo "✅ No IAM roles found"
+          else
+            echo "⚠️  Remaining roles: $REMAINING_ROLES"
           fi
           
           echo "✅ Cleanup verification completed"
@@ -142,9 +242,21 @@ jobs:
           echo ""
           echo "📋 Summary:"
           echo "- Cleanup type: ${{ github.event.inputs.cleanup_type }}"
-          echo "- EKS cluster: $EKS_CLUSTER_NAME"
           echo "- AWS region: $AWS_REGION"
+          if [ -n "$EKS_CLUSTER_NAME" ]; then
+            echo "- EKS cluster: $EKS_CLUSTER_NAME"
+          else
+            echo "- EKS cluster: Not found"
+          fi
           echo ""
           echo "💡 Next steps:"
-          echo "- If you cleaned up 'all', you may need to reinstall EBS CSI driver before deploying Airflow again"
-          echo "- If you cleaned up 'airflow', you can redeploy it using the main deployment workflow" 
+          if [ "${{ github.event.inputs.cleanup_type }}" = "all" ]; then
+            echo "- All infrastructure has been cleaned up"
+            echo "- You can redeploy the entire infrastructure using the main deployment workflow"
+          elif [ "${{ github.event.inputs.cleanup_type }}" = "infrastructure" ]; then
+            echo "- Infrastructure has been cleaned up"
+            echo "- You can redeploy infrastructure using Terraform"
+          else
+            echo "- Kubernetes resources have been cleaned up"
+            echo "- You can redeploy applications using the deployment workflows"
+          fi 
