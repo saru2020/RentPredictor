@@ -1,7 +1,5 @@
 name: 'Complete Deployment Pipeline'
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
