@@ -44,7 +44,7 @@ resource "aws_s3_bucket" "ml_data" {
 resource "aws_eks_cluster" "main" {
   name     = var.eks_cluster_name
   role_arn = aws_iam_role.eks_cluster.arn
-  version  = "1.30"
+  version  = "1.31"
 
   vpc_config {
     subnet_ids              = module.vpc.private_subnets

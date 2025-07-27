@@ -900,4 +900,47 @@ jobs:
           echo "EKS Cluster: ${{ needs.check-infra.outputs.eks_cluster_name }}"
           
           # Get service endpoints
-          kubectl get services -o wide || echo "⚠️  Could not get service information" 
+          kubectl get services -o wide || echo "⚠️  Could not get service information"
+          
+          echo ""
+          echo "🌐 API Access Information:"
+          echo "=========================="
+          
+          # Get Model API service details
+          echo "📊 Model API Service:"
+          kubectl get service model-api -o wide || echo "⚠️  Could not get Model API service"
+          
+          # Get the external IP/load balancer URL
+          MODEL_API_URL=$(kubectl get service model-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available")
+          MODEL_API_PORT=$(kubectl get service model-api -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "5000")
+          
+          echo ""
+          echo "🔗 Model API Endpoints:"
+          echo "  Base URL: http://$MODEL_API_URL:$MODEL_API_PORT"
+          echo "  Health Check: http://$MODEL_API_URL:$MODEL_API_PORT/health"
+          echo "  Predict: http://$MODEL_API_URL:$MODEL_API_PORT/predict"
+          
+          echo ""
+          echo "📝 Example API Usage:"
+          echo "  # Health check"
+          echo "  curl http://$MODEL_API_URL:$MODEL_API_PORT/health"
+          echo ""
+          echo "  # Make a prediction"
+          echo "  curl -X POST http://$MODEL_API_URL:$MODEL_API_PORT/predict \\"
+          echo "    -H 'Content-Type: application/json' \\"
+          echo "    -d '{\"features\": [1, 2, 3, 4, 5, 6]}'"
+          
+          echo ""
+          echo "🔧 Troubleshooting:"
+          echo "  # Check if pods are running"
+          echo "  kubectl get pods -l app=model-api"
+          echo ""
+          echo "  # Check service status"
+          echo "  kubectl get service model-api"
+          echo ""
+          echo "  # View logs"
+          echo "  kubectl logs -l app=model-api"
+          
+          # Save the API URL to a file for easy access
+          echo "http://$MODEL_API_URL:$MODEL_API_PORT" > api_endpoint.txt
+          echo "API endpoint saved to api_endpoint.txt" 
