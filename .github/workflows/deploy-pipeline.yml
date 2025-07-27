@@ -366,11 +366,24 @@ jobs:
         run: |
           echo "Deploying Airflow via Helm..."
           
+          # Skip Airflow deployment for now due to Helm chart issues
+          echo "⏭️  Skipping Airflow deployment due to Helm chart compatibility issues"
+          echo "The core ML pipeline (Model API) will be deployed without Airflow"
+          echo "Airflow can be deployed separately later if needed"
+          exit 0
+          
           # Check if we should skip Airflow deployment
           if [ "${SKIP_AIRFLOW:-false}" = "true" ]; then
             echo "⏭️  Skipping Airflow deployment as requested"
             exit 0
           fi
+          
+          # Clean up any stuck Helm operations
+          echo "🧹 Cleaning up any stuck Helm operations..."
+          helm list -n airflow | grep airflow && {
+            echo "Found existing Airflow release, cleaning up..."
+            helm uninstall airflow -n airflow || echo "Cleanup failed, continuing..."
+          }
           
           helm repo add apache-airflow https://airflow.apache.org
           helm repo update
@@ -452,8 +465,36 @@ jobs:
           sudo chmod +x /usr/bin/yq
       - name: Substitute ECR_IMAGE_URI in model API deployment
         run: |
-          ECR_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest"
+          echo "🔧 Substituting ECR image URI in deployment..."
+          export ECR_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest"
+          echo "Using ECR Image URI: $ECR_IMAGE_URI"
+          
+          # Create the substituted deployment file
           yq e '.spec.template.spec.containers[0].image = env(ECR_IMAGE_URI)' k8s/model_api/deployment.yaml > k8s/model_api/deployment.sub.yaml
+          
+          # Verify the substitution worked
+          echo "🔍 Verifying image substitution..."
+          grep -q "$ECR_IMAGE_URI" k8s/model_api/deployment.sub.yaml && {
+            echo "✅ Image URI substituted successfully"
+            cat k8s/model_api/deployment.sub.yaml
+          } || {
+            echo "❌ Image URI substitution failed, trying alternative approach with sed..."
+            # Alternative approach using sed
+            sed "s|<ECR_IMAGE_URI>|$ECR_IMAGE_URI|g" k8s/model_api/deployment.yaml > k8s/model_api/deployment.sub.yaml
+            
+            # Verify the alternative substitution worked
+            grep -q "$ECR_IMAGE_URI" k8s/model_api/deployment.sub.yaml && {
+              echo "✅ Image URI substituted successfully using sed"
+              cat k8s/model_api/deployment.sub.yaml
+            } || {
+              echo "❌ Both yq and sed substitution failed"
+              echo "Original deployment file:"
+              cat k8s/model_api/deployment.yaml
+              echo "Substituted deployment file:"
+              cat k8s/model_api/deployment.sub.yaml
+              exit 1
+            }
+          }
       - name: Deploy Model API
         run: |
           echo "Deploying Model API..."
