@@ -877,10 +877,15 @@ jobs:
           
           # Check if Airflow namespace exists before waiting for it
           if kubectl get namespace airflow 2>/dev/null; then
-            echo "⏳ Waiting for Airflow webserver deployment to be ready..."
-            kubectl wait --for=condition=available --timeout=300s deployment/airflow-webserver -n airflow || {
-              echo "⚠️  Airflow webserver not ready within timeout, but continuing..."
-            }
+            # Check if the Airflow webserver deployment actually exists
+            if kubectl get deployment airflow-webserver -n airflow 2>/dev/null; then
+              echo "⏳ Waiting for Airflow webserver deployment to be ready..."
+              kubectl wait --for=condition=available --timeout=300s deployment/airflow-webserver -n airflow || {
+                echo "⚠️  Airflow webserver not ready within timeout, but continuing..."
+              }
+            else
+              echo "⏭️  Airflow webserver deployment not found, skipping Airflow wait"
+            fi
           else
             echo "⏭️  Airflow namespace not found, skipping Airflow wait"
           fi
