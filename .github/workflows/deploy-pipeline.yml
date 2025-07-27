@@ -120,24 +120,47 @@ jobs:
           if [ "$EKS_EXISTS" = false ]; then
             echo "🚀 Creating EKS cluster..."
             
-            # Create VPC and networking first
+            # Try to create VPC and networking first
             echo "🌐 Creating VPC and networking infrastructure..."
-            terraform apply -auto-approve \
+            VPC_OUTPUT=$(terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
               -var="eks_cluster_name=ml-crash-course-cluster" \
-              -target=module.vpc || {
-              echo "⚠️  VPC creation failed (may already exist)"
-            }
+              -target=module.vpc 2>&1)
+            VPC_EXIT_CODE=$?
             
-            # Create EKS cluster
-            terraform apply -auto-approve \
+            if [ $VPC_EXIT_CODE -ne 0 ]; then
+              if echo "$VPC_OUTPUT" | grep -q "VpcLimitExceeded\|EntityAlreadyExists"; then
+                echo "⚠️  VPC creation failed (limit exceeded or already exists)"
+                echo "$VPC_OUTPUT" | grep -E "(VpcLimitExceeded|EntityAlreadyExists)" || true
+              else
+                echo "❌ VPC creation failed with unexpected error:"
+                echo "$VPC_OUTPUT"
+              fi
+            else
+              echo "✅ VPC created successfully"
+            fi
+            
+            # Try to create EKS cluster
+            echo "🚀 Creating EKS cluster..."
+            EKS_OUTPUT=$(terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}" \
               -var="s3_bucket_name=ml-crash-course-data" \
               -var="eks_cluster_name=ml-crash-course-cluster" \
-              -target=aws_eks_cluster.main || {
-              echo "⚠️  EKS cluster creation failed (may already exist)"
-            }
+              -target=aws_eks_cluster.main 2>&1)
+            EKS_EXIT_CODE=$?
+            
+            if [ $EKS_EXIT_CODE -ne 0 ]; then
+              if echo "$EKS_OUTPUT" | grep -q "EntityAlreadyExists\|ResourceInUseException"; then
+                echo "⚠️  EKS cluster creation failed (may already exist)"
+                echo "$EKS_OUTPUT" | grep -E "(EntityAlreadyExists|ResourceInUseException)" || true
+              else
+                echo "❌ EKS cluster creation failed with unexpected error:"
+                echo "$EKS_OUTPUT"
+              fi
+            else
+              echo "✅ EKS cluster created successfully"
+            fi
           else
             echo "✅ EKS cluster already exists"
           fi
@@ -146,18 +169,10 @@ jobs:
           
           echo "Getting infrastructure outputs..."
           
-          # Use the variables we checked to determine the resource names
-          if [ "$S3_EXISTS" = true ] && [ "$IAM_EXISTS" = true ] && [ "$EKS_EXISTS" = true ]; then
-            # All resources exist, use the known names
-            S3_BUCKET_NAME="ml-crash-course-data"
-            EKS_CLUSTER_NAME="ml-crash-course-cluster"
-            echo "Using known resource names (Terraform skipped):"
-          else
-            # Some resources were created, get from Terraform outputs
-            S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "ml-crash-course-data")
-            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null || echo "ml-crash-course-cluster")
-            echo "Using Terraform outputs:"
-          fi
+          # Always use known resource names since we're creating them individually
+          S3_BUCKET_NAME="ml-crash-course-data"
+          EKS_CLUSTER_NAME="ml-crash-course-cluster"
+          echo "Using known resource names:"
           
           echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
           echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
