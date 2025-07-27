@@ -2,6 +2,8 @@
 
 *How I learned to build a scalable machine learning system from scratch using Apache Spark, Kubernetes, and AWS services*
 
+![Rent Predictor - Predicting Rent Prices Using Machine Learning](rent_predictor_image.png)
+
 ## 🎯 The Learning Challenge
 
 When I started my ML learning journey, I wanted to build something real - not just another tutorial project. I decided to create a house rent prediction system that could actually be used in production. The challenge was daunting: I needed to build a system that could:
