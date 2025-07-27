@@ -1,8 +1,8 @@
-name: Build and Push Docker Images
+name: Build and Push Docker Images (DEPRECATED - Use Complete Deployment Pipeline)
 on:
+  # Disabled - use the complete deployment pipeline instead
   push:
-    branches: [main, infra, data]
-  workflow_dispatch:
+    branches: [nonexistent-branch]
 
 jobs:
   build-and-push:
