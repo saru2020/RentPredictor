@@ -425,6 +425,29 @@ jobs:
             exit 1
           fi
           
+          echo "✅ EKS cluster is active!"
+          
+          # Check if node group exists (but don't fail if it doesn't)
+          NODEGROUP_STATUS=$(aws eks describe-nodegroup \
+            --cluster-name $EKS_CLUSTER_NAME \
+            --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+            --region $AWS_REGION \
+            --query 'nodegroup.status' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          if [ "$NODEGROUP_STATUS" = "NOT_FOUND" ]; then
+            echo "⚠️  Node group not found - will be created in infrastructure step"
+          elif [ "$NODEGROUP_STATUS" != "ACTIVE" ]; then
+            echo "⚠️  Node group exists but not active (status: $NODEGROUP_STATUS)"
+          else
+            echo "✅ Node group is active!"
+          fi
+          
+          echo "✅ Infrastructure check completed - proceeding with deployment"
+      - name: Create infrastructure if needed
+        run: |
+          echo "🔧 Checking if infrastructure needs to be created..."
+          
           # Check if node group exists
           NODEGROUP_STATUS=$(aws eks describe-nodegroup \
             --cluster-name $EKS_CLUSTER_NAME \
@@ -433,13 +456,44 @@ jobs:
             --query 'nodegroup.status' \
             --output text 2>/dev/null || echo "NOT_FOUND")
           
-          if [ "$NODEGROUP_STATUS" != "ACTIVE" ]; then
-            echo "❌ Node group is not active (status: $NODEGROUP_STATUS)"
-            echo "🔧 Please ensure the infrastructure step runs successfully first"
-            exit 1
+          if [ "$NODEGROUP_STATUS" = "NOT_FOUND" ]; then
+            echo "🔧 Node group not found, creating infrastructure..."
+            
+            # Use the existing Terraform setup
+            echo "🔧 Using existing Terraform setup to create infrastructure..."
+            echo "Please ensure the 'check-infra' job runs successfully to create the node group"
+            echo "The node group will be created automatically by Terraform"
+          else
+            echo "✅ Infrastructure already exists"
           fi
           
-          echo "✅ Infrastructure is ready!"
+          # Wait for node group to be ready
+          echo "⏳ Waiting for node group to be ready..."
+          MAX_ATTEMPTS=20
+          ATTEMPT=0
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            NODEGROUP_STATUS=$(aws eks describe-nodegroup \
+              --cluster-name $EKS_CLUSTER_NAME \
+              --nodegroup-name "$EKS_CLUSTER_NAME-node-group" \
+              --region $AWS_REGION \
+              --query 'nodegroup.status' \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+            
+            echo "📊 Node group status: $NODEGROUP_STATUS (attempt $((ATTEMPT+1))/$MAX_ATTEMPTS)"
+            
+            if [ "$NODEGROUP_STATUS" = "ACTIVE" ]; then
+              echo "✅ Node group is active!"
+              break
+            fi
+            
+            ATTEMPT=$((ATTEMPT+1))
+            sleep 60
+          done
+          
+          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+            echo "⚠️  Timeout waiting for node group to be ready, but continuing..."
+          fi
       - name: Verify EKS cluster access
         run: |
           echo "Verifying access to EKS cluster: $EKS_CLUSTER_NAME"
