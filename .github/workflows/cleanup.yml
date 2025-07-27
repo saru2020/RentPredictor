@@ -65,6 +65,7 @@ jobs:
       
       - name: Cleanup Kubernetes Resources
         if: github.event.inputs.cleanup_type == 'airflow' || github.event.inputs.cleanup_type == 'all'
+        timeout-minutes: 15
         run: |
           if [ -n "$EKS_CLUSTER_NAME" ]; then
             echo "🔧 Setting up kubectl for cluster: $EKS_CLUSTER_NAME"
@@ -191,6 +192,7 @@ jobs:
       
       - name: Cleanup Infrastructure
         if: github.event.inputs.cleanup_type == 'infrastructure' || github.event.inputs.cleanup_type == 'all'
+        timeout-minutes: 30
         run: |
           echo "🏗️  Cleaning up infrastructure resources..."
           cd infra
@@ -204,6 +206,37 @@ jobs:
           # Check if state exists and has resources
           if terraform state list > /dev/null 2>&1; then
             echo "🗑️  Destroying infrastructure with Terraform..."
+            
+            # Pre-cleanup: Remove resources that commonly cause dependency issues
+            echo "🔧 Pre-cleaning resources that commonly cause dependency issues..."
+            
+            # Get VPC ID from Terraform state
+            VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+            if [ -n "$VPC_ID" ]; then
+              echo "🔍 Found VPC: $VPC_ID, performing pre-cleanup..."
+              
+              # Clean up internet gateway first (common dependency issue)
+              echo "🗑️  Pre-cleaning internet gateway..."
+              IGW=$(aws ec2 describe-internet-gateways --filter "Name=attachment.vpc-id,Values=$VPC_ID" --query 'InternetGateways[0].InternetGatewayId' --output text 2>/dev/null || echo "")
+              if [ -n "$IGW" ] && [ "$IGW" != "None" ]; then
+                echo "🗑️  Detaching internet gateway: $IGW"
+                aws ec2 detach-internet-gateway --internet-gateway-id $IGW --vpc-id $VPC_ID || true
+                echo "🗑️  Deleting internet gateway: $IGW"
+                aws ec2 delete-internet-gateway --internet-gateway-id $IGW || true
+              fi
+              
+              # Clean up subnets (another common dependency issue)
+              echo "🗑️  Pre-cleaning subnets..."
+              SUBNETS=$(aws ec2 describe-subnets --filter "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[].SubnetId' --output text 2>/dev/null || echo "")
+              if [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ]; then
+                for SUBNET in $SUBNETS; do
+                  if [ "$SUBNET" != "None" ] && [ -n "$SUBNET" ]; then
+                    echo "🗑️  Deleting subnet: $SUBNET"
+                    aws ec2 delete-subnet --subnet-id $SUBNET || true
+                  fi
+                done
+              fi
+            fi
             
             # First, try to destroy with -refresh=false to avoid dependency issues
             echo "🔄 Attempting Terraform destroy with refresh disabled..."
@@ -353,6 +386,18 @@ jobs:
                    echo "🗑️  Deleting internet gateway: $IGW"
                    aws ec2 delete-internet-gateway --internet-gateway-id $IGW || true
                  fi
+                 
+                 # Clean up subnets
+                 echo "🗑️  Cleaning up subnets..."
+                 SUBNETS=$(aws ec2 describe-subnets --filter "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[].SubnetId' --output text 2>/dev/null || echo "")
+                 if [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ]; then
+                   for SUBNET in $SUBNETS; do
+                     if [ "$SUBNET" != "None" ] && [ -n "$SUBNET" ]; then
+                       echo "🗑️  Deleting subnet: $SUBNET"
+                       aws ec2 delete-subnet --subnet-id $SUBNET || true
+                     fi
+                   done
+                 fi
                fi
               
               # Try Terraform destroy again
@@ -466,6 +511,34 @@ jobs:
             fi
             
             echo "✅ Manual infrastructure cleanup completed"
+          fi
+          
+          # Additional cleanup for any remaining resources that might be stuck
+          echo "🔧 Performing final cleanup of any remaining resources..."
+          
+          # Clean up any remaining internet gateways
+          echo "🗑️  Cleaning up any remaining internet gateways..."
+          IGW_LIST=$(aws ec2 describe-internet-gateways --query 'InternetGateways[?Attachments[0].State==`attached`].{IGWId:InternetGatewayId,VpcId:Attachments[0].VpcId}' --output text 2>/dev/null || echo "")
+          if [ -n "$IGW_LIST" ] && [ "$IGW_LIST" != "None" ]; then
+            while read -r IGW_ID VPC_ID; do
+              if [ "$IGW_ID" != "None" ] && [ -n "$IGW_ID" ] && [ "$IGW_ID" != "IGWId" ]; then
+                echo "🗑️  Detaching and deleting internet gateway: $IGW_ID"
+                aws ec2 detach-internet-gateway --internet-gateway-id $IGW_ID --vpc-id $VPC_ID || true
+                aws ec2 delete-internet-gateway --internet-gateway-id $IGW_ID || true
+              fi
+            done <<< "$IGW_LIST"
+          fi
+          
+          # Clean up any remaining subnets
+          echo "🗑️  Cleaning up any remaining subnets..."
+          SUBNET_LIST=$(aws ec2 describe-subnets --query 'Subnets[].SubnetId' --output text 2>/dev/null || echo "")
+          if [ -n "$SUBNET_LIST" ] && [ "$SUBNET_LIST" != "None" ]; then
+            for SUBNET_ID in $SUBNET_LIST; do
+              if [ "$SUBNET_ID" != "None" ] && [ -n "$SUBNET_ID" ]; then
+                echo "🗑️  Deleting subnet: $SUBNET_ID"
+                aws ec2 delete-subnet --subnet-id $SUBNET_ID || true
+              fi
+            done
           fi
       
       - name: Verify Cleanup
