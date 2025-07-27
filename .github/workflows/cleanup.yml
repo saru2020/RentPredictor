@@ -210,59 +210,117 @@ jobs:
             terraform destroy -auto-approve -refresh=false -var="aws_region=$AWS_REGION" || {
               echo "⚠️  Terraform destroy failed, trying to clean up dependencies first..."
               
-              # Get VPC ID from Terraform state
-              VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
-              if [ -n "$VPC_ID" ]; then
-                echo "🔍 Found VPC: $VPC_ID, cleaning up dependencies..."
-                
-                # Clean up NAT gateways
-                echo "🗑️  Cleaning up NAT gateways..."
-                NAT_GATEWAYS=$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text 2>/dev/null || echo "")
-                if [ -n "$NAT_GATEWAYS" ] && [ "$NAT_GATEWAYS" != "None" ]; then
-                  for NAT_GW in $NAT_GATEWAYS; do
-                    if [ "$NAT_GW" != "None" ] && [ -n "$NAT_GW" ]; then
-                      echo "🗑️  Deleting NAT gateway: $NAT_GW"
-                      aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GW || true
-                    fi
-                  done
-                  
-                  # Wait for NAT gateways to be deleted
-                  echo "⏳ Waiting for NAT gateways to be deleted..."
-                  sleep 60
-                fi
-                
-                # Clean up Elastic IPs
-                echo "🗑️  Cleaning up Elastic IPs..."
-                EIPS=$(aws ec2 describe-addresses --filter "Name=domain,Values=vpc" --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || echo "")
-                if [ -n "$EIPS" ] && [ "$EIPS" != "None" ]; then
-                  for EIP in $EIPS; do
-                    if [ "$EIP" != "None" ] && [ -n "$EIP" ]; then
-                      echo "🗑️  Releasing Elastic IP: $EIP"
-                      aws ec2 release-address --allocation-id $EIP || true
-                    fi
-                  done
-                fi
-                
-                # Clean up route table associations
-                echo "🗑️  Cleaning up route table associations..."
-                ROUTE_TABLES=$(aws ec2 describe-route-tables --filter "Name=vpc-id,Values=$VPC_ID" --query 'RouteTables[].RouteTableId' --output text 2>/dev/null || echo "")
-                if [ -n "$ROUTE_TABLES" ] && [ "$ROUTE_TABLES" != "None" ]; then
-                  for RT in $ROUTE_TABLES; do
-                    if [ "$RT" != "None" ] && [ -n "$RT" ]; then
-                      # Get subnet associations
-                      SUBNET_ASSOCIATIONS=$(aws ec2 describe-route-tables --route-table-ids $RT --query 'RouteTables[0].Associations[?SubnetId!=null].RouteTableAssociationId' --output text 2>/dev/null || echo "")
-                      if [ -n "$SUBNET_ASSOCIATIONS" ] && [ "$SUBNET_ASSOCIATIONS" != "None" ]; then
-                        for ASSOC in $SUBNET_ASSOCIATIONS; do
-                          if [ "$ASSOC" != "None" ] && [ -n "$ASSOC" ]; then
-                            echo "🗑️  Disassociating route table: $ASSOC"
-                            aws ec2 disassociate-route-table --association-id $ASSOC || true
-                          fi
-                        done
-                      fi
-                    fi
-                  done
-                fi
-              fi
+                             # Get VPC ID from Terraform state
+               VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+               if [ -n "$VPC_ID" ]; then
+                 echo "🔍 Found VPC: $VPC_ID, cleaning up dependencies..."
+                 
+                 # Clean up EKS node groups first (they depend on subnets)
+                 echo "🗑️  Cleaning up EKS node groups..."
+                 NODE_GROUPS=$(aws eks list-nodegroups --cluster-name $EKS_CLUSTER_NAME --query 'nodegroups[]' --output text 2>/dev/null || echo "")
+                 if [ -n "$NODE_GROUPS" ] && [ "$NODE_GROUPS" != "None" ]; then
+                   for NODE_GROUP in $NODE_GROUPS; do
+                     if [ "$NODE_GROUP" != "None" ] && [ -n "$NODE_GROUP" ]; then
+                       echo "🗑️  Deleting EKS node group: $NODE_GROUP"
+                       aws eks delete-nodegroup --cluster-name $EKS_CLUSTER_NAME --nodegroup-name $NODE_GROUP || true
+                     fi
+                   done
+                   
+                   # Wait for node groups to be deleted
+                   echo "⏳ Waiting for EKS node groups to be deleted..."
+                   sleep 120
+                 fi
+                 
+                 # Clean up EKS cluster
+                 echo "🗑️  Deleting EKS cluster: $EKS_CLUSTER_NAME"
+                 aws eks delete-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION || true
+                 
+                 # Wait for EKS cluster to be deleted
+                 echo "⏳ Waiting for EKS cluster to be deleted..."
+                 sleep 180
+                 
+                 # Clean up NAT gateways
+                 echo "🗑️  Cleaning up NAT gateways..."
+                 NAT_GATEWAYS=$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text 2>/dev/null || echo "")
+                 if [ -n "$NAT_GATEWAYS" ] && [ "$NAT_GATEWAYS" != "None" ]; then
+                   for NAT_GW in $NAT_GATEWAYS; do
+                     if [ "$NAT_GW" != "None" ] && [ -n "$NAT_GW" ]; then
+                       echo "🗑️  Deleting NAT gateway: $NAT_GW"
+                       aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GW || true
+                     fi
+                   done
+                   
+                   # Wait for NAT gateways to be deleted
+                   echo "⏳ Waiting for NAT gateways to be deleted..."
+                   sleep 60
+                 fi
+                 
+                 # Clean up Elastic IPs
+                 echo "🗑️  Cleaning up Elastic IPs..."
+                 EIPS=$(aws ec2 describe-addresses --filter "Name=domain,Values=vpc" --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || echo "")
+                 if [ -n "$EIPS" ] && [ "$EIPS" != "None" ]; then
+                   for EIP in $EIPS; do
+                     if [ "$EIP" != "None" ] && [ -n "$EIP" ]; then
+                       echo "🗑️  Releasing Elastic IP: $EIP"
+                       aws ec2 release-address --allocation-id $EIP || true
+                     fi
+                   done
+                 fi
+                 
+                 # Clean up route table associations
+                 echo "🗑️  Cleaning up route table associations..."
+                 ROUTE_TABLES=$(aws ec2 describe-route-tables --filter "Name=vpc-id,Values=$VPC_ID" --query 'RouteTables[].RouteTableId' --output text 2>/dev/null || echo "")
+                 if [ -n "$ROUTE_TABLES" ] && [ "$ROUTE_TABLES" != "None" ]; then
+                   for RT in $ROUTE_TABLES; do
+                     if [ "$RT" != "None" ] && [ -n "$RT" ]; then
+                       # Get subnet associations
+                       SUBNET_ASSOCIATIONS=$(aws ec2 describe-route-tables --route-table-ids $RT --query 'RouteTables[0].Associations[?SubnetId!=null].RouteTableAssociationId' --output text 2>/dev/null || echo "")
+                       if [ -n "$SUBNET_ASSOCIATIONS" ] && [ "$SUBNET_ASSOCIATIONS" != "None" ]; then
+                         for ASSOC in $SUBNET_ASSOCIATIONS; do
+                           if [ "$ASSOC" != "None" ] && [ -n "$ASSOC" ]; then
+                             echo "🗑️  Disassociating route table: $ASSOC"
+                             aws ec2 disassociate-route-table --association-id $ASSOC || true
+                           fi
+                         done
+                       fi
+                     fi
+                   done
+                 fi
+                 
+                 # Clean up network interfaces
+                 echo "🗑️  Cleaning up network interfaces..."
+                 ENIS=$(aws ec2 describe-network-interfaces --filter "Name=vpc-id,Values=$VPC_ID" --query 'NetworkInterfaces[?Status!=`deleted`].NetworkInterfaceId' --output text 2>/dev/null || echo "")
+                 if [ -n "$ENIS" ] && [ "$ENIS" != "None" ]; then
+                   for ENI in $ENIS; do
+                     if [ "$ENI" != "None" ] && [ -n "$ENI" ]; then
+                       echo "🗑️  Deleting network interface: $ENI"
+                       aws ec2 delete-network-interface --network-interface-id $ENI || true
+                     fi
+                   done
+                 fi
+                 
+                 # Clean up security groups (except default)
+                 echo "🗑️  Cleaning up security groups..."
+                 SGS=$(aws ec2 describe-security-groups --filter "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null || echo "")
+                 if [ -n "$SGS" ] && [ "$SGS" != "None" ]; then
+                   for SG in $SGS; do
+                     if [ "$SG" != "None" ] && [ -n "$SG" ]; then
+                       echo "🗑️  Deleting security group: $SG"
+                       aws ec2 delete-security-group --group-id $SG || true
+                     fi
+                   done
+                 fi
+                 
+                 # Clean up internet gateway
+                 echo "🗑️  Detaching and deleting internet gateway..."
+                 IGW=$(aws ec2 describe-internet-gateways --filter "Name=attachment.vpc-id,Values=$VPC_ID" --query 'InternetGateways[0].InternetGatewayId' --output text 2>/dev/null || echo "")
+                 if [ -n "$IGW" ] && [ "$IGW" != "None" ]; then
+                   echo "🗑️  Detaching internet gateway: $IGW"
+                   aws ec2 detach-internet-gateway --internet-gateway-id $IGW --vpc-id $VPC_ID || true
+                   echo "🗑️  Deleting internet gateway: $IGW"
+                   aws ec2 delete-internet-gateway --internet-gateway-id $IGW || true
+                 fi
+               fi
               
               # Try Terraform destroy again
               echo "🔄 Retrying Terraform destroy..."
