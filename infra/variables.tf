@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "s3_bucket_name" {
   description = "S3 bucket for ML data"
   type        = string
-  default     = "ml-crash-course-data-2024"
+  default     = "ml-crash-course-data"
 }
 
 variable "eks_cluster_name" {
