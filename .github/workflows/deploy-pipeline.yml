@@ -33,10 +33,10 @@ jobs:
           terraform init
           
           # Check if infrastructure exists
-          if terraform output -json s3_bucket_name >/dev/null 2>&1; then
+          if terraform output -raw s3_bucket_name >/dev/null 2>&1; then
             echo "Infrastructure already exists, using existing resources"
-            S3_BUCKET_NAME=$(terraform output -json s3_bucket_name | jq -r '.')
-            EKS_CLUSTER_NAME=$(terraform output -json eks_cluster_name | jq -r '.')
+            S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
+            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
             echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
             echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
             echo "Using existing S3 Bucket: $S3_BUCKET_NAME"
@@ -54,8 +54,8 @@ jobs:
               -var="eks_cluster_name=ml-crash-course-cluster"
             
             echo "Infrastructure created successfully!"
-            S3_BUCKET_NAME=$(terraform output -json s3_bucket_name | jq -r '.')
-            EKS_CLUSTER_NAME=$(terraform output -json eks_cluster_name | jq -r '.')
+            S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
+            EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
             echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
             echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
             echo "Created S3 Bucket: $S3_BUCKET_NAME"
