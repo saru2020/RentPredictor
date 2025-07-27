@@ -951,6 +951,51 @@ jobs:
               exit 1
             }
           }
+      - name: Create AWS Credentials Secret
+        run: |
+          echo "🔐 Creating AWS Credentials Secret..."
+          
+          # Delete existing secret if it exists
+          kubectl delete secret aws-credentials --ignore-not-found=true
+          
+          # Create the AWS credentials secret
+          kubectl create secret generic aws-credentials \
+            --from-literal=access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} || {
+            echo "❌ Failed to create AWS credentials secret"
+            exit 1
+          }
+          
+          echo "✅ AWS Credentials Secret created successfully"
+          
+          # Verify the secret was created
+          kubectl get secret aws-credentials || {
+            echo "❌ AWS credentials secret not found after creation"
+            exit 1
+          }
+          
+          echo "✅ AWS credentials secret verification successful"
+      
+      - name: Create Service Account and RBAC
+        run: |
+          echo "🔐 Creating Service Account and RBAC..."
+          
+          # Create the spark-sa service account
+          kubectl apply -f k8s/spark-service-account.yaml || {
+            echo "❌ Failed to create service account"
+            exit 1
+          }
+          
+          echo "✅ Service Account and RBAC created successfully"
+          
+          # Verify the service account was created
+          kubectl get serviceaccount spark-sa || {
+            echo "❌ Service account not found after creation"
+            exit 1
+          }
+          
+          echo "✅ Service account verification successful"
+      
       - name: Deploy Model API
         run: |
           echo "Deploying Model API..."
@@ -1097,7 +1142,7 @@ jobs:
           echo "  # Make a prediction"
           echo "  curl -X POST http://$MODEL_API_URL:$MODEL_API_PORT/predict \\"
           echo "    -H 'Content-Type: application/json' \\"
-          echo "    -d '{\"features\": [1, 2, 3, 4, 5, 6]}'"
+          echo "    -d '{\"BHK\": 2, \"Size\": 1000, \"Bathroom\": 2, \"City\": \"Mumbai\", \"Furnishing Status\": \"Semi-Furnished\", \"Tenant Preferred\": \"Bachelors\", \"Point of Contact\": \"Contact Owner\"}'"
           
           echo ""
           echo "🔧 Troubleshooting:"
@@ -1114,16 +1159,23 @@ jobs:
           echo "http://$MODEL_API_URL:$MODEL_API_PORT" > api_endpoint.txt
           echo "API endpoint saved to api_endpoint.txt"
           
+          # Deploy Spark Job YAML for easy triggering
+          echo "📦 Deploying Spark Job YAML..."
+          kubectl apply -f k8s/spark-job.yaml || {
+            echo "⚠️  Failed to deploy Spark Job YAML, but continuing..."
+          }
+          echo "✅ Spark Job YAML deployed successfully"
+          
           echo ""
           echo "🔥 Spark Job Triggering:"
           echo "======================="
           echo ""
           echo "📋 To trigger the Spark job, use one of these methods:"
           echo ""
-          echo "1️⃣  Direct Kubernetes Job:"
-          echo "   kubectl apply -f k8s/spark-job.yaml"
+          echo "1️⃣  Using the trigger script:"
+          echo "   ./trigger_spark_job.sh"
           echo ""
-          echo "2️⃣  Manual kubectl command:"
+          echo "2️⃣  Direct kubectl command:"
           echo "   kubectl create job ml-spark-job --from=cronjob/ml-spark-job"
           echo ""
           echo "3️⃣  Check job status:"
