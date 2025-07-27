@@ -339,11 +339,39 @@ jobs:
             aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
             kubectl get nodes
           }
+      - name: Check EKS cluster resources
+        run: |
+          echo "🔍 Checking EKS cluster resources..."
+          
+          # Check available nodes
+          echo "📊 Available nodes:"
+          kubectl get nodes -o wide
+          
+          # Check node resources
+          echo "📊 Node resources:"
+          kubectl describe nodes | grep -A 5 "Allocated resources" || echo "⚠️  Could not get resource information"
+          
+          # Check if we have enough resources for Airflow
+          NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+          echo "📊 Total nodes: $NODE_COUNT"
+          
+          if [ "$NODE_COUNT" -lt 2 ]; then
+            echo "⚠️  Warning: Only $NODE_COUNT nodes available. Airflow may have resource constraints."
+          else
+            echo "✅ Sufficient nodes available for Airflow deployment"
+          fi
       - name: Set up Helm
         uses: azure/setup-helm@v3
       - name: Deploy Airflow via Helm
         run: |
           echo "Deploying Airflow via Helm..."
+          
+          # Check if we should skip Airflow deployment
+          if [ "${SKIP_AIRFLOW:-false}" = "true" ]; then
+            echo "⏭️  Skipping Airflow deployment as requested"
+            exit 0
+          fi
+          
           helm repo add apache-airflow https://airflow.apache.org
           helm repo update
           
@@ -353,33 +381,61 @@ jobs:
           
           # Try to install with specific version and better error handling
           echo "Installing Airflow with specific version..."
-          helm upgrade --install airflow apache-airflow/airflow \
+          
+          # Use timeout to prevent hanging
+          timeout 15m helm upgrade --install airflow apache-airflow/airflow \
             --version 1.12.0 \
             -f k8s/airflow/values.yaml \
             --namespace airflow \
             --create-namespace \
-            --timeout 10m || {
+            --wait --timeout 10m || {
             echo "⚠️  Failed with specific version, trying latest version..."
-            helm upgrade --install airflow apache-airflow/airflow \
+            timeout 15m helm upgrade --install airflow apache-airflow/airflow \
               -f k8s/airflow/values.yaml \
               --namespace airflow \
               --create-namespace \
-              --timeout 10m || {
+              --wait --timeout 10m || {
               echo "❌ Failed to deploy Airflow with both versions"
               echo "Trying minimal configuration..."
-              helm upgrade --install airflow apache-airflow/airflow \
+              timeout 15m helm upgrade --install airflow apache-airflow/airflow \
                 --set executor=KubernetesExecutor \
                 --set web.service.type=LoadBalancer \
                 --set workers.replicas=2 \
                 --namespace airflow \
                 --create-namespace \
-                --timeout 10m || {
+                --wait --timeout 10m || {
                 echo "❌ Failed to deploy Airflow with minimal config"
                 echo "⚠️  Skipping Airflow deployment and continuing with other components..."
               }
             }
           }
           echo "✅ Airflow deployment attempt completed"
+      - name: Monitor Airflow deployment
+        run: |
+          echo "🔍 Monitoring Airflow deployment progress..."
+          
+          # Wait a bit for resources to be created
+          sleep 30
+          
+          # Check if namespace was created
+          if kubectl get namespace airflow; then
+            echo "✅ Airflow namespace created"
+            
+            # Check for pods
+            echo "📊 Checking Airflow pods..."
+            kubectl get pods -n airflow || echo "⚠️  No pods found yet"
+            
+            # Check for services
+            echo "📊 Checking Airflow services..."
+            kubectl get services -n airflow || echo "⚠️  No services found yet"
+            
+            # Check for deployments
+            echo "📊 Checking Airflow deployments..."
+            kubectl get deployments -n airflow || echo "⚠️  No deployments found yet"
+            
+          else
+            echo "❌ Airflow namespace not found"
+          fi
       - name: Verify Airflow deployment
         run: |
           echo "🔍 Verifying Airflow deployment..."
