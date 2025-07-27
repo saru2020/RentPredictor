@@ -29,9 +29,17 @@ jobs:
       - name: Terraform Init
         run: terraform -chdir=infra init
       - name: Terraform Plan
-        run: terraform -chdir=infra plan
+        run: |
+          terraform -chdir=infra plan \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="s3_bucket_name=ml-crash-course-data-$(date +%Y%m%d%H%M%S)" \
+            -var="eks_cluster_name=ml-crash-course-cluster-$(date +%Y%m%d%H%M%S)"
       - name: Terraform Apply
-        run: terraform -chdir=infra apply -auto-approve
+        run: |
+          terraform -chdir=infra apply -auto-approve \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="s3_bucket_name=ml-crash-course-data-$(date +%Y%m%d%H%M%S)" \
+            -var="eks_cluster_name=ml-crash-course-cluster-$(date +%Y%m%d%H%M%S)"
       - name: Get Terraform outputs
         id: terraform-output
         run: |
