@@ -1,10 +1,21 @@
+# Minimal Airflow configuration for EKS deployment
 executor: KubernetesExecutor
+
+# Web server configuration
 web:
   service:
     type: LoadBalancer
   port: 8080
+
+# Worker configuration
 workers:
   replicas: 2
+
+# Disable persistence for simplicity
 logs:
+  persistence:
+    enabled: false
+
+dags:
   persistence:
     enabled: false 
