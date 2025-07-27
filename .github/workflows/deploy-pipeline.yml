@@ -44,8 +44,9 @@ jobs:
         id: terraform-output
         run: |
           cd infra
-          S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
-          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          echo "Getting Terraform outputs..."
+          S3_BUCKET_NAME=$(terraform output -json s3_bucket_name | jq -r '.')
+          EKS_CLUSTER_NAME=$(terraform output -json eks_cluster_name | jq -r '.')
           echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
           echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
           echo "Infrastructure provisioned successfully!"
