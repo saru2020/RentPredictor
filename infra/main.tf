@@ -44,7 +44,7 @@ resource "aws_s3_bucket" "ml_data" {
 resource "aws_eks_cluster" "main" {
   name     = var.eks_cluster_name
   role_arn = aws_iam_role.eks_cluster.arn
-  version  = "1.29"
+  version  = "1.30"
 
   vpc_config {
     subnet_ids              = module.vpc.private_subnets
@@ -145,6 +145,7 @@ resource "aws_eks_node_group" "main" {
   node_group_name = "${var.eks_cluster_name}-node-group"
   node_role_arn   = aws_iam_role.eks_node_group.arn
   subnet_ids      = module.vpc.private_subnets
+  version         = aws_eks_cluster.main.version
 
   scaling_config {
     desired_size = 2
