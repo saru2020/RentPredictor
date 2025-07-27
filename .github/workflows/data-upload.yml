@@ -1,8 +1,8 @@
-name: 'Upload Dataset to S3'
+name: 'Upload Dataset to S3 (DEPRECATED - Use Complete Deployment Pipeline)'
 on:
+  # Disabled - use the complete deployment pipeline instead
   push:
-    branches: [main, data]
-  workflow_dispatch:
+    branches: [nonexistent-branch]
 
 jobs:
   upload-data:

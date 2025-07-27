@@ -1,7 +1,8 @@
-name: 'Provision AWS Infra'
+name: 'Provision AWS Infra (DEPRECATED - Use Complete Deployment Pipeline)'
 on:
+  # Disabled - use the complete deployment pipeline instead
   push:
-    branches: [main, infra]
+    branches: [nonexistent-branch]
 
 jobs:
   terraform:

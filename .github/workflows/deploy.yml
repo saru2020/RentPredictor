@@ -1,10 +1,8 @@
-name: Deploy to EKS
+name: Deploy to EKS (DEPRECATED - Use Complete Deployment Pipeline)
 on:
+  # Disabled - use the complete deployment pipeline instead
   push:
-    branches: [main]
-  release:
-    types: [published]
-  workflow_dispatch:
+    branches: [nonexistent-branch]
 
 jobs:
   deploy:

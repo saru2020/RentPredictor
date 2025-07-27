@@ -1,0 +1,125 @@
+name: 'Complete Deployment Pipeline'
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Step 1: Provision Infrastructure
+  provision-infra:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+    outputs:
+      s3_bucket_name: ${{ steps.terraform-output.outputs.s3_bucket_name }}
+      eks_cluster_name: ${{ steps.terraform-output.outputs.eks_cluster_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      - name: Terraform Init
+        run: terraform -chdir=infra init
+      - name: Terraform Plan
+        run: terraform -chdir=infra plan
+      - name: Terraform Apply
+        run: terraform -chdir=infra apply -auto-approve
+      - name: Get Terraform outputs
+        id: terraform-output
+        run: |
+          cd infra
+          S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)
+          EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          echo "s3_bucket_name=$S3_BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "eks_cluster_name=$EKS_CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "Infrastructure provisioned successfully!"
+          echo "S3 Bucket: $S3_BUCKET_NAME"
+          echo "EKS Cluster: $EKS_CLUSTER_NAME"
+
+  # Step 2: Upload Dataset to S3
+  upload-data:
+    runs-on: ubuntu-latest
+    needs: provision-infra
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ needs.provision-infra.outputs.s3_bucket_name }}
+      S3_KEY: House_Rent_Dataset.csv
+      LOCAL_PATH: data/House_Rent_Dataset.csv
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install boto3
+      - name: Upload data to S3
+        run: |
+          echo "Uploading to S3 bucket: $S3_BUCKET"
+          python upload_data_to_s3.py
+
+  # Step 3: Deploy to EKS
+  deploy-to-eks:
+    runs-on: ubuntu-latest
+    needs: [provision-infra, upload-data]
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      ECR_REPO_API: ml-crash-course-api
+      EKS_CLUSTER_NAME: ${{ needs.provision-infra.outputs.eks_cluster_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Update kubeconfig
+        run: |
+          echo "Configuring kubectl for EKS cluster: $EKS_CLUSTER_NAME"
+          aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+      - name: Deploy Airflow via Helm
+        run: |
+          helm repo add apache-airflow https://airflow.apache.org
+          helm repo update
+          helm upgrade --install airflow apache-airflow/airflow -f k8s/airflow/values.yaml --namespace airflow --create-namespace
+      - name: Install yq
+        run: |
+          sudo wget https://github.com/mikefarah/yq/releases/download/v4.43.1/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+      - name: Substitute ECR_IMAGE_URI in model API deployment
+        run: |
+          ECR_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_API:latest"
+          yq e '.spec.template.spec.containers[0].image = env(ECR_IMAGE_URI)' k8s/model_api/deployment.yaml > k8s/model_api/deployment.sub.yaml
+      - name: Deploy Model API
+        run: |
+          kubectl apply -f k8s/model_api/deployment.sub.yaml
+          kubectl apply -f k8s/model_api/service.yaml
+          kubectl patch service model-api -p '{"spec": {"ports": [{"port": 5001, "targetPort": 5000}]}}'
+      - name: Deployment Complete
+        run: |
+          echo "🎉 Complete deployment pipeline finished successfully!"
+          echo "Infrastructure: ✅"
+          echo "Data uploaded: ✅"
+          echo "Applications deployed: ✅" 
