@@ -58,11 +58,11 @@ Here's exactly how the entire system works, explained for full-stack engineers:
 15. DAG monitors job execution and logs results
 ```
 
-## 🏗️ System Overview
+## 🏗️ **System Overview**
 
 This project implements a complete Machine Learning pipeline for house rent prediction using modern cloud-native technologies. The system follows a microservices architecture with containerized components and supports both local development and cloud deployment.
 
-## 📊 Architecture Flowchart
+## 📊 **Architecture Flowchart**
 
 ```mermaid
 graph TB
@@ -108,7 +108,7 @@ graph TB
     class M,N api
 ```
 
-## 🛠️ Technology Stack
+## 🛠️ **Technology Stack**
 
 ### **Data Layer**
 - **MinIO**: S3-compatible object storage for local development
@@ -145,7 +145,7 @@ graph TB
 - **Git**: Version control
 - **CI/CD**: GitHub Actions for automated deployment
 
-## 🔄 Data Flow
+## 🔄 **Data Flow**
 
 ### 1. **Data Ingestion**
 ```
@@ -167,7 +167,7 @@ S3 Model → Flask API → REST Endpoints → Client Applications
 Airflow DAG → Trigger Spark Job → Monitor Execution → Log Results
 ```
 
-## 🏃‍♂️ Execution Modes
+## 🏃‍♂️ **Execution Modes**
 
 ### **Local Development**
 ```bash
@@ -193,22 +193,24 @@ kubectl apply -f k8s/
 Model API: https://your-domain.com
 ```
 
-## 📁 Project Structure
+## 📁 **Project Structure**
 
 ```
-ml_crash_course/
-├── 📊 data/                    # Dataset and documentation
-├── 🔄 dags/                    # Airflow workflow definitions
-├── 🐳 docker-compose.yml       # Local development setup
-├── 🏗️ infra/                   # Terraform infrastructure code
-├── 🚢 k8s/                     # Kubernetes manifests
-├── 🌐 model_api/               # Flask API service
-├── ⚡ spark_jobs/              # Spark processing jobs
-├── 📤 upload_data_to_s3.py    # Data ingestion script
-└── 📖 README.md               # Project documentation
+RentPredictor/
+├── 📊 data/                          # Dataset and documentation
+├── 🐳 docker-compose.yml             # Local development setup
+├── ⚡ spark_jobs/                    # ML training pipeline
+├── 🌐 model_api/                     # REST API service
+├── 🔄 dags/                          # Airflow workflows
+├── ☁️ infra/                         # Terraform infrastructure
+├── 🚢 k8s/                           # Kubernetes manifests
+├── 🔧 .github/workflows/             # CI/CD pipelines
+├── 📝 PROJECT_ARCHITECTURE.md        # Detailed architecture docs
+├── 📖 BLOG_POST.md                   # Learning journey blog
+└── 🎯 README.md                      # Project documentation
 ```
 
-## 🔧 Key Components
+## 🔧 **Key Components**
 
 ### **1. Data Pipeline (`spark_jobs/preprocess_and_train.py`)**
 - Reads CSV data from S3/MinIO
@@ -233,7 +235,21 @@ ml_crash_course/
 - ECR repository for container images
 - EKS cluster for Kubernetes deployment
 
-## 🎯 Use Cases
+## 🚀 **CI/CD Pipeline Features**
+
+### **Automated Workflows:**
+- **Infrastructure as Code:** Terraform-managed AWS resources
+- **Container Orchestration:** EKS deployment with auto-scaling
+- **Image Management:** Automated ECR builds and pushes
+- **Data Pipeline:** Automated dataset uploads and processing
+- **Monitoring:** Comprehensive logging and observability
+
+### **Cost Optimization:**
+- **Scheduled Cleanup:** Automatic resource cleanup to minimize costs
+- **Resource Scaling:** Auto-scaling based on demand
+- **Spot Instances:** Cost-effective compute resources
+
+## 🎯 **Use Cases**
 
 1. **Real-time Rent Prediction**: API endpoints for instant predictions
 2. **Batch Processing**: Scheduled model retraining with new data
@@ -241,7 +257,7 @@ ml_crash_course/
 4. **Model Monitoring**: Track model performance and drift
 5. **Scalable Deployment**: Cloud-native architecture for production workloads
 
-## 🚀 Benefits
+## 🚀 **Benefits**
 
 - **Scalability**: Distributed processing with Spark
 - **Reliability**: Containerized services with health checks
@@ -249,5 +265,38 @@ ml_crash_course/
 - **Maintainability**: Infrastructure as Code with Terraform
 - **Observability**: Built-in monitoring and logging
 - **Reproducibility**: Consistent environments with Docker
+
+## 📊 **Service Access URLs**
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| **MinIO Console** | http://localhost:9001 | S3-compatible storage management |
+| **Spark UI** | http://localhost:8080 | Monitor Spark jobs |
+| **Airflow UI** | http://localhost:8081 | Workflow orchestration |
+| **Model API** | http://localhost:5001 | REST API for predictions |
+
+### **Default Credentials**
+
+| Service | Username | Password |
+|---------|----------|----------|
+| **MinIO** | `minioadmin` | `minioadmin` |
+| **Airflow** | `admin` | `admin` |
+
+## 🔧 **Development & Deployment Options**
+
+### **Local Development:**
+- Use `docker-compose.yml` for quick local setup
+- Perfect for development and testing
+- All services run in containers
+
+### **Cloud Deployment:**
+- Use GitHub Actions for automated deployment
+- Production-ready with auto-scaling
+- Managed AWS services for reliability
+
+### **Hybrid Approach:**
+- Develop locally, deploy to cloud
+- Use same codebase for both environments
+- Consistent behavior across environments
 
 This architecture demonstrates modern ML engineering practices with cloud-native technologies, making it suitable for both learning and production use cases. 
